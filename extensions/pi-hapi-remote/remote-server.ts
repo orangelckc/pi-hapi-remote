@@ -201,7 +201,11 @@ export class RemoteBridgeServer {
   private requireOrigin(req: IncomingMessage): void {
     const origin = this.originOf(req);
     if (!origin || !this.deps.allowedOrigins.includes(origin)) {
-      throw new HttpError(403, ERROR_CODES.forbidden, "来源不被允许");
+      throw new HttpError(
+        403,
+        ERROR_CODES.forbidden,
+        "来源不被允许：请通过 PWA 页面访问，而不是直接打开接口地址",
+      );
     }
   }
 
