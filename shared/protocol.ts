@@ -176,6 +176,8 @@ export const LIMITS = {
   commandDedupCapacity: 500,
   /** 控制端点限速：每分钟每设备最大请求数。 */
   controlRateLimitPerMinute: 30,
+  /** 流式条目更新合并窗口：窗口内的连续帧合并为一帧发布。 */
+  streamingUpdateCoalesceMs: 50,
 } as const;
 
 /** 通用错误码。 */

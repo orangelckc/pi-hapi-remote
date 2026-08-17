@@ -42,6 +42,11 @@ export class SessionBridge {
   private streamingAssistantId: string | null = null;
   /** 已发布到 journal 的条目 ID（区分 added / updated 事件）。 */
   private projectedIds = new Set<string>();
+  /** 待合并的流式条目更新（合并窗口见 LIMITS.streamingUpdateCoalesceMs）。 */
+  private pendingStreamUpdate: {
+    entry: RemoteEntry;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
   /** 命令幂等去重（定容 FIFO）。 */
   private recentCommandIds: string[] = [];
   private seenCommandIds = new Set<string>();
@@ -64,6 +69,7 @@ export class SessionBridge {
     this.streamingAssistantId = null;
     this.shareSessionId = null;
     this.isStreaming = false;
+    this.dropStreamUpdate();
   }
 
   get attached(): boolean {
@@ -88,6 +94,7 @@ export class SessionBridge {
   resyncFromSession(): void {
     const ctx = this.ctx;
     if (!ctx) return;
+    this.dropStreamUpdate();
     this.projectedIds.clear();
     this.projector.rebuild(ctx.sessionManager.getBranch());
     for (const entry of this.projector.snapshot()) {
@@ -135,11 +142,13 @@ export class SessionBridge {
 
   onAgentStart(): void {
     this.isStreaming = true;
+    this.flushStreamUpdate();
     this.journal.append({ type: "agent_state", isStreaming: true });
   }
 
   onAgentSettled(): void {
     this.isStreaming = false;
+    this.flushStreamUpdate();
     this.journal.append({ type: "agent_state", isStreaming: false });
   }
 
@@ -164,6 +173,8 @@ export class SessionBridge {
   onMessageEnd(message: AgentMessage): void {
     if (message.role === "assistant") {
       if (this.streamingAssistantId) {
+        // 丢弃未发布的中间帧：定稿事件携带完整最终内容。
+        this.dropStreamUpdate();
         const entries = this.projector.finalizeAssistantStream(
           this.streamingAssistantId,
           message,
@@ -214,8 +225,42 @@ export class SessionBridge {
       this.journal.append({ type: "entries_added", entries: added });
     }
     for (const entry of updated) {
-      this.journal.append({ type: "entry_updated", entry });
+      if (entry.id === this.streamingAssistantId) {
+        // 流式帧进入合并窗口，降低高频全量更新带来的事件风暴与带宽。
+        this.scheduleStreamUpdate(entry);
+      } else {
+        this.journal.append({ type: "entry_updated", entry });
+      }
     }
+  }
+
+  /** 流式帧进入合并窗口：窗口内新帧覆盖旧帧，到期发布最新一帧。 */
+  private scheduleStreamUpdate(entry: RemoteEntry): void {
+    if (this.pendingStreamUpdate) clearTimeout(this.pendingStreamUpdate.timer);
+    this.pendingStreamUpdate = {
+      entry,
+      timer: setTimeout(
+        () => this.flushStreamUpdate(),
+        LIMITS.streamingUpdateCoalesceMs,
+      ),
+    };
+  }
+
+  /** 立即发布挂起的流式帧（如存在）。 */
+  private flushStreamUpdate(): void {
+    const pending = this.pendingStreamUpdate;
+    if (!pending) return;
+    this.pendingStreamUpdate = null;
+    clearTimeout(pending.timer);
+    this.journal.append({ type: "entry_updated", entry: pending.entry });
+  }
+
+  /** 丢弃挂起的流式帧（定稿/重建会发布或取代其内容）。 */
+  private dropStreamUpdate(): void {
+    const pending = this.pendingStreamUpdate;
+    if (!pending) return;
+    this.pendingStreamUpdate = null;
+    clearTimeout(pending.timer);
   }
 
   // ---- 命令注入（Command Gateway 核心逻辑） ----
