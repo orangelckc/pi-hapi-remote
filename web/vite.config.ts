@@ -24,5 +24,8 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // 5173 在扩展的 Origin 白名单内；端口被占用时直接报错，
+    // 避免静默漂移到未授权端口导致 PWA 请求全部 403。
+    strictPort: true,
   },
 });
