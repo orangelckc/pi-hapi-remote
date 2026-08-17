@@ -216,7 +216,7 @@ export class RemoteBridgeServer {
         return;
       }
 
-      // Origin 校验：拒绝非白名单来源（浏览器必须携带 Origin）。
+      // Origin 校验：携带 Origin 时必须是白名单来源；同源 GET 请求无 Origin 头，放行。
       this.requireOrigin(req);
 
       if (this.closed) {
@@ -269,8 +269,11 @@ export class RemoteBridgeServer {
   }
 
   private requireOrigin(req: IncomingMessage): void {
+    // 浏览器对同源 GET 请求（fetch）不发送 Origin 头，缺失时视为同源页面或
+    // 非浏览器客户端，交由 Bearer Token 鉴权；非浏览器客户端本就可伪造 Origin，
+    // 此处只需拦截携带其他 Origin 的浏览器页面（无法伪造，且能读取响应）。
     const origin = this.originOf(req);
-    if (!origin || !this.deps.allowedOrigins.includes(origin)) {
+    if (origin && !this.deps.allowedOrigins.includes(origin)) {
       throw new HttpError(
         403,
         ERROR_CODES.forbidden,
