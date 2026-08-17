@@ -69,7 +69,7 @@ vercel deploy --prod     # 或推送 GitHub 后导入，配置见 web/vercel.jso
 在真实 Pi 会话中逐项验证：
 
 - [ ] `/remote start`：出现数据暴露确认；确认后输出公网地址、Viewer 链接与控制二维码。
-- [ ] 手机（移动网络）打开 Viewer 链接：看到完整活动分支；看不到 Thinking、系统提示词、废弃分支。
+- [ ] 手机（移动网络）打开 Viewer 链接：看到完整活动分支与思考过程；看不到系统提示词、废弃分支。
 - [ ] 手机扫描 Controller QR：直接获得控制（页面显示"我在控制"）；第二台设备再扫同一 QR 无效。
 - [ ] 控制设备空闲时发送 Prompt：进入同一 Session；运行中默认按钮为"立即引导"（Steer），可"完成后执行"（Follow-up）与"停止运行"（Abort）。
 - [ ] 远端控制期间本机输入被拦截并有提示；`Ctrl+Shift+R` 收回后远端立即只读、旧命令被拒。

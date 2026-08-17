@@ -4,7 +4,7 @@
 
 Pi 用户在桌面终端中运行长时间编码任务时，无法方便地从手机、平板或另一台电脑继续查看和控制当前会话。离开电脑后，用户通常只能等待任务结束，或者通过通用远程桌面操作整个终端；前者缺少及时反馈和纠偏能力，后者操作笨重、暴露范围过大，并且不理解 Pi 的消息、工具调用、Steer、Follow-up 和 Abort 等原生语义。
 
-用户需要一种随时开启、无需部署专用中转服务器的临时分享方式。远端设备应能查看同一个 Pi Session 的活动分支，并在获得授权后接管输入和中止能力；本机用户必须保留最终控制权，能够随时撤销远端权限。分享过程还必须避免公开 Thinking、系统提示词、废弃分支和扩展私有数据，并确保固定托管的前端不会接触或保存会话内容。
+用户需要一种随时开启、无需部署专用中转服务器的临时分享方式。远端设备应能查看同一个 Pi Session 的活动分支（含思考过程与工具调用过程，即完整转发所有消息），并在获得授权后接管输入和中止能力；本机用户必须保留最终控制权，能够随时撤销远端权限。分享过程还必须避免公开系统提示词、废弃分支和扩展私有数据，并确保固定托管的前端不会接触或保存会话内容。
 
 ## Solution
 
@@ -40,7 +40,7 @@ Viewer URL 持有者默认只有当前活动分支的读取权限，可以申请
 20. As a 远端观察者, I want to 实时看到工具调用状态, so that 我知道 Agent 正在读文件、修改代码还是执行命令。
 21. As a 远端观察者, I want to 展开查看工具参数和结果, so that 我能判断执行行为及其输出是否正确。
 22. As a 远端观察者, I want to 默认折叠较长的工具结果, so that 手机页面不会被大量日志占满。
-23. As a Pi 用户, I want to 排除 Thinking 内容, so that 模型内部推理不会通过远端分享暴露。
+23. As a 远端观察者, I want to 查看助手思考过程（Thinking）与错误信息, so that 我能完整跟踪模型的推理与分析过程（协议 v2 起取代早期"排除 Thinking"的需求）。
 24. As a Pi 用户, I want to 排除系统提示词, so that Pi 和扩展的内部指令不会被分享。
 25. As a Pi 用户, I want to 排除废弃分支, so that 远端只看到当前正在使用的会话路径。
 26. As a Pi 用户, I want to 排除扩展私有数据和不必要的本机路径元数据, so that 分享范围保持最小化。
@@ -82,7 +82,7 @@ Viewer URL 持有者默认只有当前活动分支的读取权限，可以申请
 - 产品由 Pi 扩展、本地 Remote Bridge、Tunnel Adapter、共享协议模型和移动端 PWA 五个主要部分组成。
 - Pi 扩展直接附着到已经运行的当前 Session，而不是启动新的 Pi RPC 子进程。Session 是消息和运行状态的唯一事实来源。
 - Session Bridge 作为深模块封装 Pi 生命周期事件、活动分支快照、事件归一化、命令注入和 Session 身份校验。外部模块只接触稳定的 Snapshot、Remote Event 和 Remote Command 接口。
-- Transcript Projector 作为深模块把 Pi Session entries 和实时生命周期事件转换为可公开的远端表示，并统一过滤 Thinking、系统提示词、废弃分支、扩展私有数据和不必要的路径元数据。
+- Transcript Projector 作为深模块把 Pi Session entries 和实时生命周期事件转换为可公开的远端表示，并统一过滤系统提示词、废弃分支、扩展私有数据和不必要的路径元数据；Thinking 正文与助手错误信息随助手条目转发（协议 v2 起）。
 - Event Journal 作为深模块维护单调递增 Cursor、有限容量事件缓冲区、长轮询等待者和重同步判定。它不感知 HTTP、PWA 或 Pi API。
 - Capability Authority 作为深模块负责 Viewer Token、一次性 Claim Token、Controller Token、设备身份、令牌摘要、过期和撤销。令牌使用至少 256 位加密安全随机数生成。
 - Control Lease 作为深模块维护单远端写入者规则、批准状态、替换控制者、本机收回和 Share 生命周期失效。多个观察者可以并存，但只有当前租约持有者可以发送控制命令。
@@ -113,7 +113,7 @@ Viewer URL 持有者默认只有当前活动分支的读取权限，可以申请
 - 当前仓库只有实施计划，没有既有测试基础设施或可参考的同类测试；按照已确认的项目约束，MVP 不新增自动化测试功能。
 - 验收以外部可见行为为准，不检查模块内部字段、私有函数或具体框架实现。
 - Session Bridge 的手工验收应覆盖：附着当前 Session、读取活动分支、接收消息和工具生命周期、注入 Prompt/Steer/Follow-up、执行 Abort，以及 Session 切换和退出时清理。
-- Transcript Projector 的手工验收应覆盖：展示用户消息、助手可见正文、工具调用和工具结果；排除 Thinking、系统提示词、废弃分支、扩展私有条目和不必要的路径元数据。
+- Transcript Projector 的手工验收应覆盖：展示用户消息、助手可见正文、思考过程与错误信息、工具调用和工具结果；排除系统提示词、废弃分支、扩展私有条目和不必要的路径元数据。
 - Event Journal 的手工验收应覆盖：新事件立即唤醒长轮询、Cursor 连续增长、断线后增量恢复、Cursor 过期后触发完整重同步。
 - Capability Authority 和 Control Lease 的手工验收应覆盖：Viewer 只读、Claim 只能兑换一次、未批准设备不能写、单控制者、控制替换、本机收回、撤销和 Share 结束后旧令牌失效。
 - Command Gateway 的手工验收应覆盖：命令 ID 去重、错误 Session 拒绝、无租约拒绝、运行中默认 Steer、明确 Follow-up 和 Abort。
@@ -130,7 +130,7 @@ Viewer URL 持有者默认只有当前活动分支的读取权限，可以申请
 - Compact、Fork、Tree、Resume、Rewind 和跨 Session 导航。
 - 多个远端设备同时写入。
 - 固定 VPS Hub、离线消息、推送通知和后台队列。
-- Thinking、系统提示词、废弃分支和扩展私有数据展示。
+- 系统提示词、废弃分支和扩展私有数据展示。
 - 启发式密钥或工具输出自动脱敏。
 - 对话正文及工具输出的离线持久化。
 - 长期可信设备和跨 Share 自动授权。

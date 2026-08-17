@@ -6,7 +6,7 @@
  * 变更时必须递增 PROTOCOL_VERSION。
  */
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /** URL Fragment 中的连接载荷（Fragment 不会发送给静态托管服务端）。 */
 export interface SharePayload {
@@ -19,7 +19,8 @@ export interface SharePayload {
   claimToken?: string;
 }
 
-/** 远端可见的归一化会话条目。Thinking、系统提示词、废弃分支与扩展私有数据不在此列。 */
+/** 远端可见的归一化会话条目。系统提示词、废弃分支与扩展私有数据不在此列；
+ * Thinking 正文与助手错误信息自协议 v2 起转发。 */
 export type RemoteEntry =
   | UserMessageEntry
   | AssistantMessageEntry
@@ -37,6 +38,13 @@ export interface AssistantMessageEntry {
   kind: "assistant_message";
   id: string;
   text: string;
+  /** 思考过程（Thinking 块拼接，已截断）；流式期间随 entry_updated 增量更新。 */
+  thinking?: string;
+  thinkingTruncated?: boolean;
+  /** 思考内容被提供商安全过滤（redacted）时为 true，thinking 为空。 */
+  thinkingRedacted?: boolean;
+  /** 助手消息出错信息（Provider 报错、中断原因等）。 */
+  error?: string;
   /** 模型显示信息，例如 "claude-sonnet-4-5"；不含 Provider 密钥等敏感内容。 */
   modelLabel?: string;
   timestamp: number;
@@ -148,6 +156,8 @@ export const LIMITS = {
   maxBodyBytes: 256 * 1024,
   /** 单条消息文本上限。 */
   maxTextLength: 100_000,
+  /** 思考过程截断长度。 */
+  maxThinkingLength: 50_000,
   /** 工具参数预览截断长度。 */
   maxArgsPreviewLength: 2_000,
   /** 工具结果截断长度。 */

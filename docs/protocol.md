@@ -1,6 +1,6 @@
 # 同步协议
 
-协议版本：`1`（`shared/protocol.ts` 中的 `PROTOCOL_VERSION`）。快照与 PWA 均携带版本号，不匹配时客户端提示更新。
+协议版本：`2`（`shared/protocol.ts` 中的 `PROTOCOL_VERSION`）。快照与 PWA 均携带版本号，不匹配时客户端提示更新。
 
 ## 连接载荷
 
@@ -117,7 +117,8 @@ type RemoteCommand =
 ```ts
 type RemoteEntry =
   | { kind: "user_message"; id; text; timestamp }
-  | { kind: "assistant_message"; id; text; modelLabel?; timestamp }
+  | { kind: "assistant_message"; id; text; thinking?; thinkingTruncated?; thinkingRedacted?;
+      error?; modelLabel?; timestamp }
   | { kind: "tool_call"; id; toolName; argsPreview; status: "running"|"complete"|"error";
       resultText?; resultTruncated?; timestamp; completedAt? }
   | { kind: "notice"; id; text; timestamp };
@@ -125,7 +126,9 @@ type RemoteEntry =
 
 - `tool_call.id` 与 Pi 的 toolCallId 一致，运行/完成状态以同一 id 更新。
 - `argsPreview` 截断至 2000 字符，`resultText` 截断至 50000 字符（`resultTruncated` 标记）。
-- Thinking、系统提示词、废弃分支、`custom`/`custom_message` 扩展私有条目不进入条目模型。
+- `thinking` 为 Thinking 块拼接（协议 v2 起转发），流式期间随 `entry_updated` 增量更新，截断至 50000 字符；被提供商安全过滤（redacted）时 `thinkingRedacted` 为 true。
+- `error` 为助手消息出错信息（Provider 报错、中断原因等），协议 v2 起转发。
+- 系统提示词、废弃分支、`custom`/`custom_message` 扩展私有条目不进入条目模型。
 
 ## 限流与限制
 
@@ -133,6 +136,9 @@ type RemoteEntry =
 | --- | --- |
 | 请求体上限 | 256 KB |
 | 文本长度上限 | 100 000 字符 |
+| 思考过程截断 | 50 000 字符 |
+| 工具参数预览截断 | 2 000 字符 |
+| 工具结果截断 | 50 000 字符 |
 | 长轮询最长等待 | 25 s |
 | 并发长轮询上限 | 32（超出立即返回空批） |
 | 控制端点限速 | 30 次/分钟/设备（claim/request/commands） |

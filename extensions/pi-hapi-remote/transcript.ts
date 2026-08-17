@@ -2,8 +2,8 @@
  * Transcript Projector（深模块）：把 Pi Session entries 与实时生命周期事件
  * 转换为可公开的远端表示（RemoteEntry）。
  *
- * 统一过滤：Thinking 内容、系统提示词、废弃分支、扩展私有数据
- * （custom / custom_message）与不必要的本机路径元数据。
+ * 统一过滤：系统提示词、废弃分支、扩展私有数据（custom / custom_message）
+ * 与不必要的本机路径元数据。Thinking 正文与助手错误信息自协议 v2 起完整转发。
  */
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
@@ -53,7 +53,7 @@ function textContentOf(content: unknown): string {
   return parts.join("\n");
 }
 
-/** 提取助手消息正文（仅 TextContent；Thinking 被过滤）。 */
+/** 提取助手消息正文（仅 TextContent）。 */
 function assistantTextOf(content: unknown): string {
   if (!Array.isArray(content)) return "";
   const parts: string[] = [];
@@ -64,6 +64,42 @@ function assistantTextOf(content: unknown): string {
     }
   }
   return parts.join("");
+}
+
+/** 提取思考过程（Thinking 块拼接，截断至协议上限）；redacted 块单独标记。
+ * 空值转为 undefined，可直接展开进 AssistantMessageEntry。 */
+function thinkingOf(content: unknown): {
+  thinking?: string;
+  thinkingTruncated?: boolean;
+  thinkingRedacted?: boolean;
+} {
+  if (!Array.isArray(content)) return {};
+  const parts: string[] = [];
+  let redacted = false;
+  for (const block of content) {
+    if (block && typeof block === "object") {
+      const b = block as { type?: string; thinking?: string; redacted?: boolean };
+      if (b.type === "thinking") {
+        if (b.redacted) {
+          redacted = true;
+        } else if (typeof b.thinking === "string") {
+          parts.push(b.thinking);
+        }
+      }
+    }
+  }
+  const { text, truncated } = truncateText(parts.join("\n"), LIMITS.maxThinkingLength);
+  return {
+    thinking: text || undefined,
+    thinkingTruncated: truncated || undefined,
+    thinkingRedacted: redacted || undefined,
+  };
+}
+
+/** 助手错误信息（截断至协议上限）。 */
+function errorMessageOf(message: { errorMessage?: string }): string | undefined {
+  if (!message.errorMessage) return undefined;
+  return truncateText(message.errorMessage, LIMITS.maxTextLength).text;
 }
 
 /** 提取助手消息中的工具调用块。 */
@@ -126,39 +162,46 @@ export class TranscriptProjector {
     return entry;
   }
 
-  /** 流式更新当前助手条目正文。 */
+  /** 流式更新当前助手条目正文与思考过程。 */
   updateAssistantStream(entryId: string, message: { content: unknown }): RemoteEntry | null {
     const existing = this.entries.get(entryId);
     if (!existing || existing.kind !== "assistant_message") return null;
     const updated: RemoteEntry = {
       ...existing,
       text: assistantTextOf(message.content),
+      ...thinkingOf(message.content),
     };
     this.put(updated);
     return updated;
   }
 
-  /** 流式结束：写入最终正文；补齐尚未出现的工具调用条目。返回需要发布的条目。 */
+  /** 流式结束：写入最终正文与思考过程；补齐尚未出现的工具调用条目。返回需要发布的条目。 */
   finalizeAssistantStream(
     entryId: string,
-    message: { content: unknown; model?: string },
+    message: { content: unknown; model?: string; errorMessage?: string },
   ): RemoteEntry[] {
     const results: RemoteEntry[] = [];
     const existing = this.entries.get(entryId);
     const text = assistantTextOf(message.content);
+    const thinking = thinkingOf(message.content);
+    const error = errorMessageOf(message);
     if (existing && existing.kind === "assistant_message") {
       const updated: RemoteEntry = {
         ...existing,
         text,
+        ...thinking,
+        error,
         modelLabel: message.model ?? existing.modelLabel,
       };
       this.put(updated);
       results.push(updated);
-    } else if (text) {
+    } else if (text || thinking.thinking || error) {
       const entry: RemoteEntry = {
         kind: "assistant_message",
         id: entryId,
         text,
+        ...thinking,
+        error,
         modelLabel: message.model,
         timestamp: Date.now(),
       };
