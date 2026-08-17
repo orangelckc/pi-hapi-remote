@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.vercel/
+.DS_Store
+web/dist/
+web/dev-dist/
+.pi/
