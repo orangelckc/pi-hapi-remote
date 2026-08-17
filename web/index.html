@@ -6,13 +6,27 @@
       name="viewport"
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1"
     />
-    <meta name="theme-color" content="#1a1b26" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f6f9" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1a1b26" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
     <link rel="apple-touch-icon" href="/icons/icon-192.png" />
     <title>Pi Remote</title>
+    <script>
+      // 首帧前应用主题 class，避免暗色模式闪烁。
+      (function () {
+        try {
+          var t = localStorage.getItem("pi-remote-theme");
+          var dark =
+            t === "dark" ||
+            ((t === null || t === "system") &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          if (dark) document.documentElement.classList.add("dark");
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
