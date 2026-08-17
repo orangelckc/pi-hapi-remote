@@ -162,6 +162,12 @@ export function App(): JSX.Element {
     });
   }, [remote.connection]);
 
+  const onRelease = useCallback((): Promise<void> => {
+    const connection = remote.connection;
+    if (!connection) throw new Error("连接不可用");
+    return connection.releaseControl();
+  }, [remote.connection]);
+
   const state = remote.state;
 
   if (!state) {
@@ -186,6 +192,7 @@ export function App(): JSX.Element {
       onClear={remote.clearCredentials}
       onSend={onSend}
       onAbort={onAbort}
+      onRelease={onRelease}
     />
   );
 }

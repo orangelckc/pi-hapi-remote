@@ -167,6 +167,9 @@ export function PreviewPage(): JSX.Element {
         onClear={async () => {}}
         onSend={(text: string) => console.log("[preview] send:", text)}
         onAbort={() => setIsStreaming((v) => !v)}
+        onRelease={async () => {
+          console.log("[preview] release control");
+        }}
       />
       <button
         type="button"

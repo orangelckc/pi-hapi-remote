@@ -321,6 +321,9 @@ export class RemoteHub {
       case "local_reclaimed":
         audit(this.pi, "local_reclaimed", { deviceLabel: replaced?.deviceLabel });
         break;
+      case "remote_released":
+        audit(this.pi, "remote_released", { deviceLabel: replaced?.deviceLabel });
+        break;
       case "revoked":
         audit(this.pi, "control_revoked", { deviceLabel: replaced?.deviceLabel });
         break;

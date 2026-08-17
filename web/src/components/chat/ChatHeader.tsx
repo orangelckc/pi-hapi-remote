@@ -1,12 +1,13 @@
 /**
- * 顶部状态栏：会话信息、连接状态、控制权徽标与主题切换。
+ * 顶部状态栏：会话信息、连接状态、控制权徽标、移交控制权与主题切换。
  */
-import { memo } from "react";
-import { Monitor, Moon, Sun } from "lucide-react";
+import { memo, useState } from "react";
+import { ArrowLeftFromLine, Check, Loader2, Monitor, Moon, Sun, X } from "lucide-react";
 import type { ConnectionState } from "../../app/connection.js";
 import { useTheme, type Theme } from "../../app/theme.js";
 import { cn } from "../../lib/utils.js";
 import { Badge } from "../ui/badge.js";
+import { Button } from "../ui/button.js";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,7 +16,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu.js";
-import { Button } from "../ui/button.js";
 
 const themeOptions: { value: Theme; label: string; icon: typeof Sun }[] = [
   { value: "light", label: "浅色", icon: Sun },
@@ -57,17 +57,38 @@ function ThemeMenu(): JSX.Element {
 interface ChatHeaderProps {
   state: ConnectionState;
   amController: boolean;
+  /** 移交控制权给本机（仅控制者可见入口）。 */
+  onRelease(): Promise<void>;
 }
 
 export const ChatHeader = memo(function ChatHeader({
   state,
   amController,
+  onRelease,
 }: ChatHeaderProps): JSX.Element {
   const connected = state.phase === "connected";
   const reconnecting = state.phase === "reconnecting";
+  const [confirming, setConfirming] = useState(false);
+  const [releasing, setReleasing] = useState(false);
+  const [releaseError, setReleaseError] = useState<string | null>(null);
+
+  const release = async (): Promise<void> => {
+    setReleasing(true);
+    setReleaseError(null);
+    try {
+      await onRelease();
+      // 成功后 control_state 事件会把界面切回只读，无需本地处理。
+      setConfirming(false);
+    } catch (err) {
+      setReleaseError(err instanceof Error ? err.message : "移交失败");
+    } finally {
+      setReleasing(false);
+    }
+  };
 
   return (
-    <header className="sticky top-0 z-20 flex shrink-0 items-center gap-2.5 border-b border-border/70 bg-background/85 px-4 pb-2.5 backdrop-blur-md pt-[calc(0.625rem+env(safe-area-inset-top,0px))]">
+    <>
+    <header className="sticky top-0 z-20 flex shrink-0 items-center gap-2.5 border-b border-border/70 bg-background/85 px-4 pb-2.5 pt-[calc(0.625rem+env(safe-area-inset-top,0px))] backdrop-blur-md">
       <div className="min-w-0 flex-1">
         <div className="truncate text-[15px] font-semibold leading-tight">
           {state.session?.name || state.session?.cwdLabel || "Pi 会话"}
@@ -89,15 +110,50 @@ export const ChatHeader = memo(function ChatHeader({
         </div>
       </div>
 
-      {state.controllerDeviceId !== undefined &&
-        (amController ? (
+      {amController && (
+        <>
           <Badge variant="ok" className="hidden xs:inline-flex">我在控制</Badge>
-        ) : (
-          <Badge variant="warn" className="hidden xs:inline-flex">
-            {state.controllerLabel ?? "远端设备"} 控制中
-          </Badge>
-        ))}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="移交控制权给本机"
+            title="移交控制权给本机"
+            disabled={releasing}
+            onClick={() => {
+              setReleaseError(null);
+              setConfirming((v) => !v);
+            }}
+          >
+            {releasing ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <ArrowLeftFromLine className="size-4" />
+            )}
+          </Button>
+        </>
+      )}
+      {!amController && state.controllerDeviceId !== undefined && (
+        <Badge variant="warn" className="hidden xs:inline-flex">
+          {state.controllerLabel ?? "远端设备"} 控制中
+        </Badge>
+      )}
       <ThemeMenu />
     </header>
+      {confirming && amController && (
+        <div className="flex shrink-0 flex-wrap items-center justify-center gap-2 border-b border-warn/20 bg-warn/10 px-4 py-2 text-xs text-warn">
+          <span>移交后本机恢复控制，重新接管需本机批准。</span>
+          <div className="flex items-center gap-1.5">
+            <Button variant="secondary" size="sm" disabled={releasing} onClick={() => setConfirming(false)}>
+              <X className="size-3" />取消
+            </Button>
+            <Button size="sm" disabled={releasing} onClick={() => void release()}>
+              {releasing ? <Loader2 className="size-3 animate-spin" /> : <Check className="size-3" />}
+              确认移交
+            </Button>
+          </div>
+          {releaseError && <span className="w-full text-center text-danger">{releaseError}</span>}
+        </div>
+      )}
+    </>
   );
 });

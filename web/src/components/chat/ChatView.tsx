@@ -22,6 +22,8 @@ interface ChatViewProps {
   onClear(): Promise<void>;
   onSend(text: string, kind: RemoteCommandKind): void;
   onAbort(): void;
+  /** 移交控制权给本机。 */
+  onRelease(): Promise<void>;
 }
 
 function Banner({
@@ -57,6 +59,7 @@ export function ChatView({
   onClear,
   onSend,
   onAbort,
+  onRelease,
 }: ChatViewProps): JSX.Element {
   if (state.phase === "ended") {
     return <EndedOverlay onClear={() => void onClear()} />;
@@ -67,7 +70,7 @@ export function ChatView({
 
   return (
     <div className="mx-auto flex h-full w-full max-w-5xl flex-col">
-      <ChatHeader state={state} amController={amController} />
+      <ChatHeader state={state} amController={amController} onRelease={onRelease} />
 
       {state.phase === "reconnecting" && (
         <Banner tone="warn" icon>

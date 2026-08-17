@@ -18,6 +18,7 @@ export interface RemoteAuditData {
     | "controller_replaced"
     | "control_revoked"
     | "local_reclaimed"
+    | "remote_released"
     | "remote_aborted";
   /** 事件描述（面向用户的简短文本）。 */
   detail?: string;
@@ -36,6 +37,7 @@ const EVENT_LABELS: Record<RemoteAuditData["event"], string> = {
   controller_replaced: "控制者被替换",
   control_revoked: "撤销远端设备",
   local_reclaimed: "本机收回控制权",
+  remote_released: "远端移交控制权",
   remote_aborted: "远端中止运行",
 };
 

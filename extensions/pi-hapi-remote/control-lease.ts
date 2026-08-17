@@ -15,6 +15,7 @@ export type LeaseChangeReason =
   | "request_approved"
   | "replaced"
   | "local_reclaimed"
+  | "remote_released"
   | "revoked"
   | "share_ended";
 
@@ -70,6 +71,15 @@ export class ControlLease {
   /** 本机收回控制权；无远端控制者时无操作。 */
   reclaim(): ControllerInfo | null {
     return this.release("local_reclaimed");
+  }
+
+  /** 当前控制者主动移交控制权给本机；非控制者调用返回 false。 */
+  releaseBy(deviceId: string): boolean {
+    if (!this.controller || this.controller.deviceId !== deviceId) {
+      return false;
+    }
+    this.release("remote_released");
+    return true;
   }
 
   /** 撤销当前远端设备（保留分享，取消其写权限）。 */

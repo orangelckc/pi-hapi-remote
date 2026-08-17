@@ -17,6 +17,7 @@ import {
   ERROR_CODES,
   LIMITS,
   PROTOCOL_VERSION,
+  type CommandAck,
   type DeviceInfo,
   type EventBatch,
   type RemoteCommand,
@@ -242,6 +243,10 @@ export class RemoteBridgeServer {
         await this.handleControlRequest(req, res);
         return;
       }
+      if (path === "/v1/control/release" && method === "POST") {
+        await this.handleControlRelease(req, res);
+        return;
+      }
 
       throw new HttpError(404, ERROR_CODES.notFound, "接口不存在");
     } catch (error) {
@@ -418,6 +423,20 @@ export class RemoteBridgeServer {
     this.deps.lease.grant(device, "request_approved");
     this.deps.onControllerGranted(device, "request_approved");
     await this.sendJson(res, 200, { status: "approved", controllerToken });
+  }
+
+  /** 当前控制者主动移交控制权给本机。 */
+  private async handleControlRelease(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const controller = this.requireController(req);
+    this.checkRateLimit(`cmd:${controller.deviceId}`);
+    // 丢弃（可选的空）请求体，保证连接可复用。
+    await readJsonBody(req);
+    if (!this.deps.lease.releaseBy(controller.deviceId)) {
+      throw new HttpError(409, ERROR_CODES.conflict, "该设备不是当前控制者");
+    }
+    // 移交后旧 Controller Token 立即作废；租约变化经 lease 监听广播。
+    this.deps.auth.revokeControllerToken();
+    await this.sendJson(res, 200, { ok: true } satisfies CommandAck);
   }
 
   // ---- 限速 ----

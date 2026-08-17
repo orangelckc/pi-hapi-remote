@@ -335,6 +335,28 @@ export class RemoteConnection {
     return true;
   }
 
+  /** 移交控制权给本机（仅当前控制者可用）；成功后本地清除控制令牌。 */
+  async releaseControl(): Promise<void> {
+    if (!this.credentials.controllerToken) {
+      throw new RemoteConnectionError(403, "forbidden", "没有控制权");
+    }
+    const response = await fetchWithTimeout(
+      this.url("/v1/control/release"),
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.credentials.controllerToken}`,
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      },
+      30_000,
+    );
+    if (!response.ok) await this.readJson(response);
+    // 服务端已作废该令牌；本地同步清除，持久化由下一次状态变化触发。
+    this.credentials.controllerToken = undefined;
+  }
+
   /** 申请控制权（等待本机审批，最长约 60 秒）。 */
   async requestControl(): Promise<"approved" | "denied" | "timeout"> {
     const response = await fetchWithTimeout(

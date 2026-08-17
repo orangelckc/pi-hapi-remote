@@ -112,6 +112,18 @@ type RemoteCommand =
 
 本机审批界面显示设备信息；已有控制者时明确提示"将替换当前控制者"。
 
+### POST /v1/control/release
+
+```jsonc
+// 请求：Bearer <controllerToken>，可选空 JSON 体
+{}
+// 响应
+{ "ok": true }
+```
+
+当前控制者主动移交控制权给本机（保留分享）。非控制者或令牌已失效时
+`403`/`401`；移交后旧 Controller Token 立即作废，重新接管需 Claim 或申请批准。
+
 ## 条目模型
 
 ```ts
