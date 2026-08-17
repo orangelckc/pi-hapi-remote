@@ -27,7 +27,7 @@
 
 ```bash
 pnpm typecheck          # 必须通过
-pnpm build:web          # 可选：同时刷新 PWA 产物（web/dist 不随 npm 包分发）
+pnpm build:web          # 刷新前端产物（web/dist，分享时本机同源伺服）
 npm publish             # files 字段外的内容不会发布；确认 .npmignore/未配置 files 时包含
 ```
 
@@ -52,17 +52,17 @@ pi install git:github.com/<you>/pi-hapi-remote@v0.1.0
 
 Pi 克隆仓库后在根目录执行安装（读取根 `package.json` 的 `dependencies`）。
 
-## PWA 部署（Vercel）
+## 前端（本机同源伺服）
+
+分享链接直接指向隧道地址，前端静态产物由本机 Remote Bridge 同源伺服，无需部署任何静态托管：
 
 ```bash
-cd web && pnpm build     # 产物 web/dist
-vercel deploy --prod     # 或推送 GitHub 后导入，配置见 web/vercel.json
+pnpm build:web          # 产物 web/dist（默认伺服目录）
 ```
 
-默认分享链接基址为 `https://pi-hapi-remote.vercel.app/`。自托管：
-
-1. 将 `web/dist` 部署到任意 HTTPS 静态托管。
-2. 启动 Pi 前设置 `PI_REMOTE_PWA_URL=https://your-host.example.com/`。
+- 缺省目录为 `<仓库>/web/dist`，可用 `PI_REMOTE_WEB_DIST` 覆盖。
+- 未构建产物时分享仍可用（API 正常），页面返回构建提示；开发时可用 `pnpm dev:web`（localhost:5173，已在 Origin 白名单）。
+- 注意：隧道地址每次分享都变化，主屏安装的 PWA 图标不跨会话保留。
 
 ## 手工验收清单（macOS 首验）
 
@@ -97,5 +97,5 @@ MVP：
 - 能力令牌（Viewer/一次性 Claim/Controller，SHA-256 摘要保管）与单写者控制租约。
 - Tunnelmole 子进程隧道（30s 启动超时、确定性终止、遥测关闭）。
 - Snapshot + 长轮询（25s）+ 游标断线恢复 + 过期重同步。
-- Vercel 静态 PWA：Fragment 连接、IndexedDB 凭证恢复、工具折叠、断线禁用输入、可安装。
+- 本地伺服前端：同源访问、Fragment 连接、工具折叠、断线禁用输入、gzip 传输与静态资源缓存。
 - 限速、请求体限制、Origin 白名单、命令幂等、协议版本检查、审计条目。

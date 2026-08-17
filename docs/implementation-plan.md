@@ -2,7 +2,7 @@
 
 ## 1. 方案结论
 
-采用“**Pi 扩展直连当前 Session + 本地 HTTP Bridge + Tunnelmole 临时隧道 + Vercel 静态 PWA**”。
+采用“**Pi 扩展直连当前 Session + 本地 HTTP Bridge（同源伺服前端静态页）+ Tunnelmole 临时隧道**”。
 
 它与 HAPI 的目标类似，但首版不复制 HAPI 的 Hub/RPC 完整架构：
 
@@ -29,7 +29,7 @@ Pi 当前进程
                  │ 长轮询 + POST
                  ▼
 ┌──────────────────────────────────┐
-│ Vercel 静态 PWA                  │
+│ 远端浏览器（本机同源伺服的静态页） │
 │ React + TypeScript + Vite        │
 │ 不处理、不存储任何会话数据       │
 └──────────────────────────────────┘
@@ -125,10 +125,10 @@ Thinking、系统提示词、废弃分支和扩展私有数据不会公开。
 敏感参数放在 URL Fragment，而不是 Query：
 
 ```text
-https://pi-remote.vercel.app/#/connect/<encoded-payload>
+https://<tunnel-subdomain>.tunnelmole.net/#/connect/<encoded-payload>
 ```
 
-Fragment 不会发送给 Vercel。Payload 包含：
+Fragment 不会发送给隧道服务方。Payload 包含：
 
 ```ts
 interface SharePayload {
@@ -395,7 +395,7 @@ sha256(token)
 - 只监听 `127.0.0.1`。
 - 使用系统分配的随机端口。
 - 不监听局域网地址。
-- 只接受配置好的 Vercel Origin。
+- 只接受隧道地址 Origin（分享启动后动态加入）与本地开发 Origin。
 - 限制请求体大小。
 - 文本消息设置长度上限。
 - 控制请求和 Claim 接口限速。
@@ -434,8 +434,7 @@ Service Worker 只缓存静态应用壳，不缓存：
 
 ### 7.4 零遥测
 
-- Vercel 仅托管静态文件。
-- 不使用 Vercel Analytics。
+- 前端由本机同源伺服，不经任何第三方静态托管。
 - 不接入 Sentry。
 - 不上传错误堆栈。
 - Tunnelmole 子进程设置：
@@ -549,7 +548,6 @@ pi-hapi-remote/
 ├── web/
 │   ├── package.json
 │   ├── vite.config.ts
-│   ├── vercel.json
 │   ├── public/
 │   │   ├── manifest.webmanifest
 │   │   └── icons/
@@ -638,7 +636,7 @@ Tunnelmole、二维码等第三方运行时包放在 `dependencies`，前端构�
 - 手机使用移动网络可查看并控制当前 Session。
 - Pi 退出、Reload 或切换 Session 后公网入口失效。
 
-### 第 4 阶段：Vercel PWA
+### 第 4 阶段：前端页面（本机同源伺服）
 
 完成：
 

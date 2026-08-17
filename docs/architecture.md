@@ -2,7 +2,7 @@
 
 ## 总览
 
-Pi 扩展直连当前 Session + 本地 HTTP Bridge + Tunnelmole 临时隧道 + Vercel 静态 PWA。
+Pi 扩展直连当前 Session + 本地 HTTP Bridge（同源伺服前端静态页）+ Tunnelmole 临时隧道。
 
 ```text
 Pi 当前进程
@@ -24,8 +24,8 @@ Pi 当前进程
                │ 127.0.0.1:<随机端口>
         Tunnelmole 子进程（HTTPS）
                │
-               ▼ 长轮询 + POST
-        静态 PWA（React + Vite + Service Worker）
+               ▼ 静态页面 + 长轮询 + POST（同源）
+        远端浏览器（React + Vite + Service Worker）
 ```
 
 ## 深模块职责
@@ -81,7 +81,10 @@ Viewer Token、一次性 Claim Token、Controller Token 的签发与校验：
 
 ### Remote Bridge / Command Gateway（remote-server.ts）
 
-`node:http` 实现，只监听 `127.0.0.1` 随机端口：
+`node:http` 实现，只监听 `127.0.0.1` 随机端口；同时同源伺服前端静态产物（`web/dist`）：
+
+- 静态路由：`GET /` 与非 `/v1/` 路径 → `web/dist`（路径穿越防护；`/assets/*` 长缓存 immutable，其余 no-cache；文本资源按 `Accept-Encoding` gzip）。
+- 传输优化：JSON 响应 ≥ 1KB 时 gzip；`keepAliveTimeout` 30s 覆盖长轮询周期，减少经隧道中继的重复握手。
 
 | 接口 | 鉴权 | 说明 |
 | --- | --- | --- |
@@ -118,7 +121,7 @@ React 18 + TypeScript + Vite + vite-plugin-pwa：
 - `app/connection.ts`：API 客户端、长轮询循环（指数退避重连）、事件归约、命令幂等发送（网络失败自动同 ID 重试一次）、Claim 兑换与控制申请。
 - `app/useRemote.ts`：连接生命周期 Hook，凭证节流持久化。
 - `storage/db.ts`：IndexedDB 只存连接信息（Endpoint、Share ID、设备 ID、凭证、游标），不存对话正文；Share 失效自动清除。
-- URL Fragment `#/connect/<base64url payload>` 携带全部连接参数，静态托管方不可见；解析后立即从地址栏清除。
+- URL Fragment `#/connect/<base64url payload>` 携带全部连接参数，隧道服务方不可见；解析后立即从地址栏清除。
 - Service Worker 只 precache 应用壳（跨域 API 请求不拦截不缓存）。
 - 命令状态机：空闲=发送（prompt），运行中=立即引导（steer）+ 完成后执行（follow_up）+ 停止（abort）；只读设备显示申请控制权。
 

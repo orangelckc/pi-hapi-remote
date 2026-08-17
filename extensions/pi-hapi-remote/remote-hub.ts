@@ -5,6 +5,9 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Component, Text } from "@earendil-works/pi-tui";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import qrcode from "qrcode";
 import { LIMITS, type DeviceInfo, type RemoteState } from "../../shared/protocol.js";
 import { audit } from "./audit.js";
@@ -15,8 +18,6 @@ import { RemoteBridgeServer, type ApprovalDecision } from "./remote-server.js";
 import { SessionBridge } from "./session-bridge.js";
 import { TunnelmoleAdapter } from "./tunnel/tunnelmole.js";
 import { updateTuiStatus } from "./tui-status.js";
-
-export const DEFAULT_PWA_URL = "https://pi-hapi-remote.vercel.app/";
 
 export interface ShareStartResult {
   viewerUrl: string;
@@ -36,6 +37,17 @@ export interface ShareStatus {
 
 function encodePayload(payload: object): string {
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+}
+
+/** 前端静态产物目录（可被 PI_REMOTE_WEB_DIST 覆盖；缺省为仓库内 web/dist）。 */
+function resolveWebDist(): string | null {
+  const override = process.env.PI_REMOTE_WEB_DIST;
+  if (override) return path.resolve(override);
+  const candidate = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../../web/dist",
+  );
+  return existsSync(candidate) ? candidate : null;
 }
 
 /** 按任意键关闭的展示组件。 */
@@ -71,13 +83,11 @@ export class RemoteHub {
   private publicUrl: string | null = null;
   private viewerUrl: string | null = null;
   private controllerUrl: string | null = null;
-  private pwaBaseUrl: string;
   /** 最近一次 Session 上下文（stop 时仍需访问其 ui 清除状态条）。 */
   private lastCtx: ExtensionContext | null = null;
 
-  constructor(pi: ExtensionAPI, pwaBaseUrl: string = process.env.PI_REMOTE_PWA_URL ?? DEFAULT_PWA_URL) {
+  constructor(pi: ExtensionAPI) {
     this.pi = pi;
-    this.pwaBaseUrl = pwaBaseUrl.endsWith("/") ? pwaBaseUrl : pwaBaseUrl + "/";
     this.bridge = new SessionBridge(pi, this.journal);
   }
 
@@ -146,6 +156,7 @@ export class RemoteHub {
       journal: this.journal,
       bridge: this.bridge,
       allowedOrigins: this.allowedOrigins(),
+      staticDir: resolveWebDist(),
       requestApproval: (device, currentLabel) => this.requestApproval(ctx, device, currentLabel),
       onRemoteAbort: (deviceLabel) => {
         audit(this.pi, "remote_aborted", { deviceLabel });
@@ -166,6 +177,8 @@ export class RemoteHub {
       signal: abortController.signal,
     });
     this.publicUrl = handle.publicUrl;
+    // 分享页与 API 同源（隧道地址）：页面 Origin 在隧道启动后动态加入白名单。
+    this.server.allowOrigin(new URL(handle.publicUrl).origin);
 
     const viewerPayload = {
       version: 1,
@@ -180,9 +193,16 @@ export class RemoteHub {
       viewerToken,
       claimToken,
     };
-    this.viewerUrl = `${this.pwaBaseUrl}#/connect/${encodePayload(viewerPayload)}`;
-    this.controllerUrl = `${this.pwaBaseUrl}#/connect/${encodePayload(controllerPayload)}`;
+    this.viewerUrl = `${handle.publicUrl}/#/connect/${encodePayload(viewerPayload)}`;
+    this.controllerUrl = `${handle.publicUrl}/#/connect/${encodePayload(controllerPayload)}`;
     this.sharing = true;
+
+    if (!this.server.hasStaticFrontend) {
+      ctx.ui.notify(
+        "未找到 web/dist：远端将无法打开页面。请先运行 pnpm build:web，或用 PI_REMOTE_WEB_DIST 指定产物目录。",
+        "info",
+      );
+    }
 
     audit(this.pi, "share_started", { detail: handle.publicUrl });
     this.refreshTui(ctx);
@@ -266,16 +286,14 @@ export class RemoteHub {
   // ---- 内部 ----
 
   private allowedOrigins(): string[] {
-    const origins = new Set<string>();
-    try {
-      origins.add(new URL(this.pwaBaseUrl).origin);
-    } catch {
-      // 配置的 PWA 地址无效时忽略。
-    }
-    for (const dev of ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:4173", "http://127.0.0.1:4173"]) {
-      origins.add(dev);
-    }
-    return [...origins];
+    // 分享页由本服务同源伺服（隧道地址，隧道启动后动态加入）；
+    // 这里只列本地开发地址（vite dev / preview 跨域直连 API）。
+    return [
+      "http://localhost:5173",
+      "http://127.0.0.1:5173",
+      "http://localhost:4173",
+      "http://127.0.0.1:4173",
+    ];
   }
 
   private currentState(): RemoteState {

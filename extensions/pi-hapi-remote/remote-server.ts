@@ -1,12 +1,18 @@
 /**
  * Remote Bridge（本地 HTTP 服务）+ Command Gateway。
  *
- * 只监听 127.0.0.1 随机端口，提供 Snapshot、长轮询事件、命令提交、
- * 一次性 Claim 兑换与控制权申请接口。执行严格 Origin 校验、请求体限制、
- * 文本长度限制、控制端点限速与并发长轮询限制。
+ * 只监听 127.0.0.1 随机端口，同时伺服前端静态产物（web/dist）与
+ * Snapshot、长轮询事件、命令提交、一次性 Claim 兑换与控制权申请接口。
+ * API 执行严格 Origin 校验、请求体限制、文本长度限制、控制端点限速
+ * 与并发长轮询限制；静态资源不做 Origin 校验（顶级导航无 Origin 头）。
  */
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import path from "node:path";
+import { promisify } from "node:util";
+import { createGzip, gzip } from "node:zlib";
 import {
   ERROR_CODES,
   LIMITS,
@@ -29,8 +35,10 @@ export interface RemoteServerDeps {
   lease: ControlLease;
   journal: EventJournal;
   bridge: SessionBridge;
-  /** 允许的浏览器 Origin（PWA 托管地址与本地开发地址）。 */
+  /** 允许的浏览器 Origin（隧道公网地址与本地开发地址）。 */
   allowedOrigins: string[];
+  /** 前端静态产物目录（web/dist）；为 null 时返回构建提示页。 */
+  staticDir: string | null;
   /** 触发本机审批对话。currentControllerLabel 非空时表示将替换现有控制者。 */
   requestApproval: (
     device: DeviceInfo,
@@ -46,6 +54,42 @@ interface RateBucket {
   count: number;
   resetAt: number;
 }
+
+const gzipAsync = promisify(gzip);
+
+/** 常见前端产物 MIME 类型。 */
+const MIME_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".webmanifest": "application/manifest+json",
+  ".woff2": "font/woff2",
+  ".ico": "image/x-icon",
+  ".txt": "text/plain; charset=utf-8",
+};
+
+/** 可 gzip 压缩的文本类扩展名。 */
+const COMPRESSIBLE_EXTS = new Set([
+  ".html",
+  ".js",
+  ".mjs",
+  ".css",
+  ".json",
+  ".svg",
+  ".webmanifest",
+  ".txt",
+]);
+
+/** 未构建前端时的提示页。 */
+const MISSING_DIST_PAGE = `<!doctype html>
+<meta charset="utf-8">
+<title>Pi HAPI Remote</title>
+<p>前端产物未构建：请在仓库内运行 <code>pnpm build:web</code> 后重新分享，
+或设置 <code>PI_REMOTE_WEB_DIST</code> 指向已构建的目录。</p>`;
 
 function bearerToken(req: IncomingMessage): string | undefined {
   const header = req.headers.authorization;
@@ -101,17 +145,24 @@ export class RemoteBridgeServer {
     return this.portValue;
   }
 
+  /** 是否已配置前端静态产物目录。 */
+  get hasStaticFrontend(): boolean {
+    return this.deps.staticDir !== null;
+  }
+
   async start(): Promise<number> {
     if (this.server) return this.portValue!;
     this.closed = false;
     const server = http.createServer((req, res) => {
       this.handle(req, res).catch((error) => {
-        this.sendError(res, error);
+        void this.sendError(res, error);
       });
     });
     // 请求超时保护：长轮询 25s + 处理余量。
     server.requestTimeout = 60_000;
     server.headersTimeout = 35_000;
+    // 空闲 keep-alive 覆盖长轮询周期，减少经隧道中继的重复 TCP/TLS 握手。
+    server.keepAliveTimeout = 30_000;
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", () => resolve());
@@ -153,7 +204,14 @@ export class RemoteBridgeServer {
 
       // 健康检查不暴露 Session 或授权状态，且不校验 Origin 之外的任何信息。
       if (path === "/v1/health" && method === "GET") {
-        this.sendJson(res, 200, { ok: true, protocolVersion: PROTOCOL_VERSION });
+        await this.sendJson(res, 200, { ok: true, protocolVersion: PROTOCOL_VERSION });
+        return;
+      }
+
+      // 前端静态资源：与 API 同源（隧道地址），导航请求无 Origin 头，不做校验。
+      const isApi = path === "/v1" || path.startsWith("/v1/");
+      if (method === "GET" && !isApi) {
+        await this.serveStatic(req, res, url.pathname);
         return;
       }
 
@@ -187,7 +245,14 @@ export class RemoteBridgeServer {
 
       throw new HttpError(404, ERROR_CODES.notFound, "接口不存在");
     } catch (error) {
-      this.sendError(res, error);
+      await this.sendError(res, error);
+    }
+  }
+
+  /** 分享启动后追加允许的 Origin（隧道公网地址）。 */
+  allowOrigin(origin: string): void {
+    if (!this.deps.allowedOrigins.includes(origin)) {
+      this.deps.allowedOrigins.push(origin);
     }
   }
 
@@ -204,7 +269,7 @@ export class RemoteBridgeServer {
       throw new HttpError(
         403,
         ERROR_CODES.forbidden,
-        "来源不被允许：请通过 PWA 页面访问，而不是直接打开接口地址",
+        "来源不被允许：请通过分享链接访问页面，而不是直接调用接口",
       );
     }
   }
@@ -259,7 +324,7 @@ export class RemoteBridgeServer {
     if (!snapshot) {
       throw new HttpError(503, ERROR_CODES.unavailable, "会话不可用");
     }
-    this.sendJson(res, 200, snapshot);
+    await this.sendJson(res, 200, snapshot);
   }
 
   private async handleEvents(
@@ -280,12 +345,12 @@ export class RemoteBridgeServer {
 
     if (this.deps.journal.waiterCount >= LIMITS.maxConcurrentPolls) {
       // 并发上限：立即返回空批，客户端稍后重试。
-      this.sendJson(res, 200, { events: [], cursor } satisfies EventBatch);
+      await this.sendJson(res, 200, { events: [], cursor } satisfies EventBatch);
       return;
     }
 
     const batch = await this.deps.journal.poll(cursor, wait);
-    this.sendJson(res, 200, batch);
+    await this.sendJson(res, 200, batch);
   }
 
   private async handleCommands(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -306,7 +371,7 @@ export class RemoteBridgeServer {
     if (!result.ok) {
       throw new HttpError(409, result.code, result.message);
     }
-    this.sendJson(res, 200, { ok: true, duplicate: result.duplicate ?? false });
+    await this.sendJson(res, 200, { ok: true, duplicate: result.duplicate ?? false });
   }
 
   private async handleClaim(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -324,7 +389,7 @@ export class RemoteBridgeServer {
     const controllerToken = this.deps.auth.issueControllerToken();
     this.deps.lease.grant(device, "claimed");
     this.deps.onControllerGranted(device, "claimed");
-    this.sendJson(res, 200, { controllerToken });
+    await this.sendJson(res, 200, { controllerToken });
   }
 
   private async handleControlRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -346,13 +411,13 @@ export class RemoteBridgeServer {
       current?.deviceLabel,
     );
     if (decision !== "approved") {
-      this.sendJson(res, 200, { status: decision });
+      await this.sendJson(res, 200, { status: decision });
       return;
     }
     const controllerToken = this.deps.auth.issueControllerToken();
     this.deps.lease.grant(device, "request_approved");
     this.deps.onControllerGranted(device, "request_approved");
-    this.sendJson(res, 200, { status: "approved", controllerToken });
+    await this.sendJson(res, 200, { status: "approved", controllerToken });
   }
 
   // ---- 限速 ----
@@ -376,32 +441,98 @@ export class RemoteBridgeServer {
     }
   }
 
+  // ---- 静态前端 ----
+
+  private async serveStatic(
+    req: IncomingMessage,
+    res: ServerResponse,
+    pathname: string,
+  ): Promise<void> {
+    if (!this.deps.staticDir) {
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
+      res.end(MISSING_DIST_PAGE);
+      return;
+    }
+    const root = this.deps.staticDir;
+    let rel: string;
+    try {
+      rel = decodeURIComponent(pathname);
+    } catch {
+      rel = "/";
+    }
+    if (rel === "/" || rel === "") rel = "/index.html";
+    const filePath = path.join(root, path.normalize(rel));
+    // 防路径穿越：解析结果必须仍在产物目录内。
+    if (!filePath.startsWith(root + path.sep)) {
+      throw new HttpError(404, ERROR_CODES.notFound, "资源不存在");
+    }
+    const info = await stat(filePath).catch(() => null);
+    if (!info?.isFile()) {
+      throw new HttpError(404, ERROR_CODES.notFound, "资源不存在");
+    }
+
+    const ext = path.extname(filePath).toLowerCase();
+    const headers: Record<string, string | number> = {
+      "Content-Type": MIME_TYPES[ext] ?? "application/octet-stream",
+      // Vite 带内容哈希的产物可长缓存；其余（index.html / manifest 等）每次校验。
+      "Cache-Control": rel.startsWith("/assets/")
+        ? "public, max-age=31536000, immutable"
+        : "no-cache",
+      Vary: "Accept-Encoding",
+    };
+    const file = createReadStream(filePath).on("error", () => res.destroy());
+    const acceptsGzip = (req.headers["accept-encoding"] ?? "").includes("gzip");
+    if (acceptsGzip && COMPRESSIBLE_EXTS.has(ext)) {
+      headers["Content-Encoding"] = "gzip";
+      res.writeHead(200, headers);
+      file.pipe(createGzip()).on("error", () => res.destroy()).pipe(res);
+      return;
+    }
+    headers["Content-Length"] = info.size;
+    res.writeHead(200, headers);
+    file.pipe(res);
+  }
+
   // ---- 响应工具 ----
 
-  private sendJson(res: ServerResponse, status: number, body: unknown): void {
+  private async sendJson(res: ServerResponse, status: number, body: unknown): Promise<void> {
     if (res.writableEnded) return;
-    const payload = JSON.stringify(body);
-    const origin = res.req?.headers.origin;
-    if (origin && this.deps.allowedOrigins.includes(origin)) {
-      res.setHeader("Access-Control-Allow-Origin", origin);
-      res.setHeader("Vary", "Origin");
-    }
-    res.writeHead(status, {
+    const payload = Buffer.from(JSON.stringify(body), "utf-8");
+    const headers: Record<string, string | number> = {
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store",
-    });
+      Vary: "Accept-Encoding",
+    };
+    const origin = res.req?.headers.origin;
+    if (origin && this.deps.allowedOrigins.includes(origin)) {
+      headers["Access-Control-Allow-Origin"] = origin;
+    }
+    const acceptsGzip = (res.req?.headers["accept-encoding"] ?? "").includes("gzip");
+    if (acceptsGzip && payload.length >= 1_024) {
+      const compressed = await gzipAsync(payload);
+      headers["Content-Encoding"] = "gzip";
+      headers["Content-Length"] = compressed.length;
+      res.writeHead(status, headers);
+      res.end(compressed);
+      return;
+    }
+    headers["Content-Length"] = payload.length;
+    res.writeHead(status, headers);
     res.end(payload);
   }
 
-  private sendError(res: ServerResponse, error: unknown): void {
+  private async sendError(res: ServerResponse, error: unknown): Promise<void> {
     if (res.writableEnded) return;
     if (error instanceof HttpError) {
-      this.sendJson(res, error.status, {
+      await this.sendJson(res, error.status, {
         error: { code: error.code, message: error.message },
       });
       return;
     }
-    this.sendJson(res, 500, {
+    await this.sendJson(res, 500, {
       error: { code: "internal", message: "内部错误" },
     });
   }
