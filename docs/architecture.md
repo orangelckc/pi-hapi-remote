@@ -21,6 +21,7 @@ Pi 当前进程
 │  static-frontend.ts Static Frontend          │
 │  audit.ts          审计（custom entry）       │
 │  tui-status.ts     TUI 状态条                │
+│  rpc-status.ts     RPC 宿主状态桥接           │
 │  tunnel/           Tunnel Adapter 抽象       │
 └──────────────┬───────────────────────────────┘
                │ 127.0.0.1:<随机端口>
@@ -111,6 +112,10 @@ Viewer Token、一次性 Claim Token、Controller Token 的签发与校验：
 ### 审计（audit.ts）
 
 关键控制事件写入 `pi.appendEntry("remote-audit", …)` 自定义条目——**不进入模型上下文**，TUI 中以暗色单行渲染。
+
+### RPC 宿主桥接（rpc-status.ts）
+
+RPC 模式不支持自定义 TUI 组件，因此扩展通过保留的 `setWidget` key 发布带版本前缀的 base64url JSON。宿主识别后必须按机器协议处理，不得作为普通 Widget 渲染。状态包含分享阶段、链接、一次性 Claim 是否可用、观察连接数和控制者信息；不单独传输明文 Token，能力凭证仍只存在于现有 Fragment 分享 URL 中。`/remote sync` 用于宿主在恢复 Webview 或刷新快照后静默重发权威状态。
 
 ### TUI（tui-status.ts + index.ts）
 

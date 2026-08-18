@@ -17,6 +17,10 @@ import { ControlFlow } from "./control-flow.js";
 import { EventJournal } from "./event-buffer.js";
 import { RemoteBridgeServer } from "./remote-server.js";
 import { SessionBridge } from "./session-bridge.js";
+import {
+  publishRemoteRpcState,
+  type RemoteRpcPhase,
+} from "./rpc-status.js";
 import { StaticFrontend } from "./static-frontend.js";
 import { TunnelmoleAdapter } from "./tunnel/tunnelmole.js";
 import { updateTuiStatus } from "./tui-status.js";
@@ -29,12 +33,15 @@ export interface ShareStartResult {
 }
 
 export interface ShareStatus {
+  phase: RemoteRpcPhase;
   sharing: boolean;
   publicUrl?: string;
   viewerUrl?: string;
   controllerUrl?: string;
+  claimAvailable?: boolean;
   viewerCount?: number;
   controller?: ControllerInfo;
+  error?: string;
 }
 
 function encodePayload(payload: object): string {
@@ -85,12 +92,16 @@ export class RemoteHub {
   private publicUrl: string | null = null;
   private viewerUrl: string | null = null;
   private controllerUrl: string | null = null;
+  private phase: RemoteRpcPhase = "idle";
+  private lastError: string | undefined;
+  private viewerCountRefreshTimer: ReturnType<typeof setTimeout> | undefined;
   /** 最近一次 Session 上下文（stop 时仍需访问其 ui 清除状态条）。 */
   private lastCtx: ExtensionContext | null = null;
 
   constructor(pi: ExtensionAPI) {
     this.pi = pi;
     this.bridge = new SessionBridge(pi, this.journal);
+    this.journal.setWaiterCountListener(() => this.scheduleStatusRefresh());
   }
 
   get sessionBridge(): SessionBridge {
@@ -110,10 +121,11 @@ export class RemoteHub {
   handleSessionStart(ctx: ExtensionContext): void {
     this.lastCtx = ctx;
     this.bridge.attach(ctx);
+    this.publishState();
   }
 
-  handleSessionShutdown(): void {
-    void this.stop("session_shutdown", { audit: false });
+  handleSessionShutdown(): Promise<void> {
+    return this.stop("session_shutdown", { audit: false });
   }
 
   /** 活动分支结构变化（tree 导航）。 */
@@ -133,9 +145,14 @@ export class RemoteHub {
   // ---- 分享生命周期 ----
 
   async start(ctx: ExtensionContext): Promise<ShareStartResult> {
-    if (this.sharing) {
+    if (this.sharing || this.phase === "starting") {
       throw new Error("分享已在进行中");
     }
+    this.lastCtx = ctx;
+    this.phase = "starting";
+    this.lastError = undefined;
+    this.publishState();
+    this.journal.reset();
     if (!this.bridge.attached) {
       this.bridge.attach(ctx);
     }
@@ -154,7 +171,7 @@ export class RemoteHub {
       currentState: () => this.currentState(),
       requestApproval: (device, currentLabel) =>
         this.requestApproval(ctx, device, currentLabel),
-      onLeaseChange: () => this.refreshTui(ctx),
+      onLeaseChange: () => this.refreshViews(ctx),
     });
 
     this.server = new RemoteBridgeServer({
@@ -197,6 +214,7 @@ export class RemoteHub {
     this.viewerUrl = `${handle.publicUrl}/#/connect/${encodePayload(viewerPayload)}`;
     this.controllerUrl = `${handle.publicUrl}/#/connect/${encodePayload(controllerPayload)}`;
     this.sharing = true;
+    this.phase = "sharing";
 
     if (!this.server.hasStaticFrontend) {
       ctx.ui.notify(
@@ -206,7 +224,7 @@ export class RemoteHub {
     }
 
     audit(this.pi, "share_started", { detail: handle.publicUrl });
-    this.refreshTui(ctx);
+    this.refreshViews(ctx);
 
     return {
       viewerUrl: this.viewerUrl,
@@ -216,10 +234,13 @@ export class RemoteHub {
     };
   }
 
-  async stop(reason: string, options: { audit?: boolean } = {}): Promise<void> {
-    if (!this.sharing && !this.server) return;
+  async stop(reason: string, options: { audit?: boolean; error?: string } = {}): Promise<void> {
+    if (!this.sharing && !this.server && this.phase === "idle") return;
     const shouldAudit = options.audit !== false && this.sharing;
 
+    this.phase = "stopping";
+    this.lastError = options.error;
+    this.publishState();
     this.sharing = false;
 
     // 先通知观察者，再逐层关闭。
@@ -242,13 +263,14 @@ export class RemoteHub {
     this.viewerUrl = null;
     this.controllerUrl = null;
     this.bridge.detach();
+    this.phase = "idle";
 
     if (shouldAudit) {
       audit(this.pi, "share_stopped", { detail: reason });
     }
     // 刷新 TUI（清除状态条；使用最近一次会话上下文的 ui）。
     if (this.lastCtx) {
-      this.refreshTui(this.lastCtx);
+      this.refreshViews(this.lastCtx);
     }
   }
 
@@ -264,13 +286,19 @@ export class RemoteHub {
 
   status(): ShareStatus {
     if (!this.sharing) {
-      return { sharing: false };
+      return {
+        phase: this.phase,
+        sharing: false,
+        error: this.lastError,
+      };
     }
     return {
+      phase: this.phase,
       sharing: true,
       publicUrl: this.publicUrl ?? undefined,
       viewerUrl: this.viewerUrl ?? undefined,
       controllerUrl: this.controllerUrl ?? undefined,
+      claimAvailable: this.auth?.claimAvailable ?? false,
       viewerCount: this.journal.waiterCount,
       controller: this.control?.current ?? undefined,
     };
@@ -324,13 +352,56 @@ export class RemoteHub {
     return "denied";
   }
 
-  private refreshTui(ctx: ExtensionContext): void {
+  private refreshViews(ctx: ExtensionContext): void {
     const status = this.status();
-    updateTuiStatus(ctx.ui, {
+    updateTuiStatus(
+      ctx.ui,
+      {
+        sharing: status.sharing,
+        publicUrl: status.publicUrl,
+        viewerCount: status.viewerCount,
+        controllerLabel: status.controller?.deviceLabel,
+      },
+      { showControlWidget: ctx.mode === "tui" },
+    );
+    this.publishState();
+  }
+
+  /** 长轮询在超时与重连之间会短暂归零，延迟刷新可避免状态闪烁。 */
+  private scheduleStatusRefresh(): void {
+    if (!this.sharing) return;
+    if (this.viewerCountRefreshTimer) clearTimeout(this.viewerCountRefreshTimer);
+    this.viewerCountRefreshTimer = setTimeout(() => {
+      this.viewerCountRefreshTimer = undefined;
+      this.publishState();
+    }, 250);
+  }
+
+  /** 供 RPC 侧边栏主动恢复状态。 */
+  syncRpcState(): void {
+    this.publishState();
+  }
+
+  private publishState(): void {
+    const status = this.status();
+    publishRemoteRpcState(this.lastCtx, {
+      version: 1,
+      available: true,
+      phase: status.phase,
       sharing: status.sharing,
       publicUrl: status.publicUrl,
+      viewerUrl: status.viewerUrl,
+      controllerUrl: status.controllerUrl,
+      claimAvailable: status.claimAvailable,
       viewerCount: status.viewerCount,
-      controllerLabel: status.controller?.deviceLabel,
+      controller: status.controller
+        ? {
+            deviceId: status.controller.deviceId,
+            deviceLabel: status.controller.deviceLabel,
+          }
+        : undefined,
+      localHasControl: !status.controller,
+      error: status.error,
     });
   }
 

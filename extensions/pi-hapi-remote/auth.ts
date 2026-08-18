@@ -64,6 +64,11 @@ export class CapabilityAuthority {
     return digestEquals(token, this.controllerDigest);
   }
 
+  /** 一次性 Claim Token 是否仍可兑换。 */
+  get claimAvailable(): boolean {
+    return !this.revoked && this.claimDigest !== undefined;
+  }
+
   /** 校验一次性 Claim Token；命中即作废（一次性语义）。 */
   consumeClaimToken(token: string | undefined): boolean {
     if (!token || this.revoked) return false;

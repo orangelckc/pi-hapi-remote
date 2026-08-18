@@ -37,8 +37,17 @@ function renderStatusText(view: RemoteStatusView): string | undefined {
   return `远程分享开启${viewers} · ${controller}`;
 }
 
-/** 统一刷新 TUI 状态显示。 */
-export function updateTuiStatus(ui: ExtensionUIContext | undefined, view: RemoteStatusView): void {
+export interface RemoteStatusOptions {
+  /** 仅真实终端 TUI 显示远程控制提示卡；RPC 客户端使用自己的可视化界面。 */
+  showControlWidget?: boolean;
+}
+
+/** 统一刷新状态显示。 */
+export function updateTuiStatus(
+  ui: ExtensionUIContext | undefined,
+  view: RemoteStatusView,
+  options: RemoteStatusOptions = {},
+): void {
   if (!ui) return;
   const status = renderStatusText(view);
   if (status) {
@@ -46,10 +55,11 @@ export function updateTuiStatus(ui: ExtensionUIContext | undefined, view: Remote
   } else {
     ui.setStatus(STATUS_KEY, undefined);
   }
-  const lines = renderWidgetLines(view);
+  const lines = options.showControlWidget ? renderWidgetLines(view) : [];
   if (lines.length > 0) {
     ui.setWidget(WIDGET_KEY, lines);
   } else {
+    // RPC 模式也主动清理，避免热重载后残留旧版本发送的提示卡。
     ui.setWidget(WIDGET_KEY, undefined);
   }
 }

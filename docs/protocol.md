@@ -2,6 +2,16 @@
 
 协议版本：`2`（`shared/protocol.ts` 中的 `PROTOCOL_VERSION`）。快照与 PWA 均携带版本号，不匹配时客户端提示更新。
 
+## RPC 宿主状态桥接
+
+Pi RPC 模式下使用 `setWidget` 的保留 key `pi-hapi-remote:state` 发布单行状态：
+
+```text
+pi-hapi-remote-state:v1:<base64url(JSON)>
+```
+
+JSON 包含 `phase`、`sharing`、分享 URL、`claimAvailable`、`viewerCount`、当前控制者和 `localHasControl`。该协议只供受信任的本机 RPC 宿主使用；宿主应校验版本、HTTPS URL 和字段长度，并阻止该 Widget 进入普通文本渲染。`/remote sync` 可静默重发当前状态。
+
 ## 连接载荷
 
 分享链接格式（敏感参数全部位于 Fragment，不发送给静态托管服务端）：

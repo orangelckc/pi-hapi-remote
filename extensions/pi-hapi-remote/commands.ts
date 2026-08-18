@@ -42,6 +42,9 @@ export function registerRemoteCommands(pi: ExtensionAPI, hub: RemoteHub): void {
         case "stop":
           await handleStop(hub, ctx);
           return;
+        case "sync":
+          hub.syncRpcState();
+          return;
         default:
           ctx.ui.notify(
             "用法：/remote start | status | reclaim | revoke | stop",
@@ -62,6 +65,7 @@ async function handleStart(hub: RemoteHub, ctx: ExtensionContext): Promise<void>
     ? await ctx.ui.confirm("开启远程分享？", DATA_EXPOSURE_NOTICE)
     : false;
   if (!confirmed) {
+    hub.syncRpcState();
     ctx.ui.notify("已取消。", "info");
     return;
   }
@@ -73,8 +77,9 @@ async function handleStart(hub: RemoteHub, ctx: ExtensionContext): Promise<void>
     );
     await hub.showQrOverlay(ctx);
   } catch (error) {
-    await hub.stop("start_failed", { audit: false });
-    ctx.ui.notify(`开启失败：${(error as Error).message}`, "error");
+    const message = (error as Error).message;
+    await hub.stop("start_failed", { audit: false, error: message });
+    ctx.ui.notify(`开启失败：${message}`, "error");
   }
 }
 

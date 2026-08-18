@@ -15,9 +15,23 @@ export class EventJournal {
   private nextSeq = 1;
   private waiters = new Set<Waiter>();
   private capacity: number;
+  private waiterCountListener: ((count: number) => void) | undefined;
 
   constructor(capacity: number = LIMITS.eventBufferCapacity) {
     this.capacity = capacity;
+  }
+
+  /** 观察长轮询连接数量变化。 */
+  setWaiterCountListener(listener: ((count: number) => void) | undefined): void {
+    this.waiterCountListener = listener;
+  }
+
+  /** 新分享开始前清空旧游标与事件。 */
+  reset(): void {
+    this.wakeAll();
+    this.buffer = [];
+    this.nextSeq = 1;
+    this.notifyWaiterCount();
   }
 
   /** 当前最新游标（已分配的最大 seq；无事件时为 0）。 */
@@ -64,10 +78,12 @@ export class EventJournal {
         resolve,
         timer: setTimeout(() => {
           this.waiters.delete(waiter);
+          this.notifyWaiterCount();
           resolve({ events: [], cursor: this.cursor });
         }, waitMs),
       };
       this.waiters.add(waiter);
+      this.notifyWaiterCount();
     });
   }
 
@@ -92,7 +108,13 @@ export class EventJournal {
       const batch = this.collect(waiter.cursor);
       waiter.resolve(batch ?? { events: [], cursor: this.cursor });
     }
+    this.notifyWaiterCount();
   }
+
+  private notifyWaiterCount(): void {
+    this.waiterCountListener?.(this.waiters.size);
+  }
+
   /** 若有 seq > cursor 的事件则收集为批；否则返回 null。 */
   private collect(cursor: number): EventBatch | null {
     if (cursor < this.oldestSeq() - 1) {
