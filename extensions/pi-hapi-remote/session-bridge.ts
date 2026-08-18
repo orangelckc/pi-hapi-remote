@@ -154,9 +154,8 @@ export class SessionBridge {
 
   onMessageStart(message: AgentMessage): void {
     if (message.role === "assistant") {
-      const entry = this.projector.beginAssistantStream(message.model);
-      this.streamingAssistantId = entry.id;
-      this.publishEntries([entry]);
+      // 仅预分配条目 ID；首帧可见内容到达时才发布（见 updateAssistantStream）。
+      this.streamingAssistantId = this.projector.beginAssistantStream(message.model);
     }
   }
 

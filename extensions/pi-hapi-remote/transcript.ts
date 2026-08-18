@@ -130,10 +130,17 @@ function toolResultTextOf(content: unknown): { text: string; truncated: boolean 
 export class TranscriptProjector {
   private log = new EntryLog<RemoteEntry>();
   private seq = 0;
+  /** 预分配的流式助手条目：尚未产生可见内容，不入库不发布。 */
+  private pendingAssistant: {
+    id: string;
+    modelLabel?: string;
+    timestamp: number;
+  } | null = null;
 
   /** 全量重建（分享开始、tree 导航、compaction 后）。 */
   rebuild(branchEntries: SessionEntry[]): void {
     this.log.clear();
+    this.pendingAssistant = null;
     for (const entry of branchEntries) {
       this.absorbEntry(entry);
     }
@@ -146,30 +153,48 @@ export class TranscriptProjector {
 
   // ---- 流式助手消息 ----
 
-  /** 流式助手消息开始：分配条目并发布（可能为空文本）。 */
-  beginAssistantStream(model?: string): RemoteEntry {
-    const entry: RemoteEntry = {
-      kind: "assistant_message",
+  /**
+   * 流式助手消息开始：预分配条目 ID。
+   * 条目在首次出现可见内容（正文 / 思考 / 错误）时才实体化发布，
+   * 纯工具调用轮次因此不会残留空白气泡。
+   */
+  beginAssistantStream(model?: string): string {
+    this.pendingAssistant = {
       id: `assistant:${++this.seq}`,
-      text: "",
       modelLabel: model,
       timestamp: Date.now(),
     };
-    this.put(entry);
-    return entry;
+    return this.pendingAssistant.id;
   }
 
-  /** 流式更新当前助手条目正文与思考过程。 */
+  /** 流式更新当前助手条目正文与思考过程；尚无可见内容时返回 null。 */
   updateAssistantStream(entryId: string, message: { content: unknown }): RemoteEntry | null {
+    const text = assistantTextOf(message.content);
+    const thinking = thinkingOf(message.content);
     const existing = this.log.get(entryId);
-    if (!existing || existing.kind !== "assistant_message") return null;
-    const updated: RemoteEntry = {
-      ...existing,
-      text: assistantTextOf(message.content),
-      ...thinkingOf(message.content),
+    if (existing && existing.kind === "assistant_message") {
+      const updated: RemoteEntry = {
+        ...existing,
+        text,
+        ...thinking,
+      };
+      this.put(updated);
+      return updated;
+    }
+    const pending = this.pendingAssistant;
+    if (!pending || pending.id !== entryId) return null;
+    if (!text && !thinking.thinking && !thinking.thinkingRedacted) return null;
+    const entry: RemoteEntry = {
+      kind: "assistant_message",
+      id: entryId,
+      text,
+      ...thinking,
+      modelLabel: pending.modelLabel,
+      timestamp: pending.timestamp,
     };
-    this.put(updated);
-    return updated;
+    this.put(entry);
+    this.pendingAssistant = null;
+    return entry;
   }
 
   /** 流式结束：写入最终正文与思考过程；补齐尚未出现的工具调用条目。返回需要发布的条目。 */
@@ -182,6 +207,8 @@ export class TranscriptProjector {
     const text = assistantTextOf(message.content);
     const thinking = thinkingOf(message.content);
     const error = errorMessageOf(message);
+    const pending = this.pendingAssistant;
+    this.pendingAssistant = null;
     if (existing && existing.kind === "assistant_message") {
       const updated: RemoteEntry = {
         ...existing,
@@ -192,19 +219,20 @@ export class TranscriptProjector {
       };
       this.put(updated);
       results.push(updated);
-    } else if (text || thinking.thinking || error) {
+    } else if (text || thinking.thinking || thinking.thinkingRedacted || error) {
       const entry: RemoteEntry = {
         kind: "assistant_message",
         id: entryId,
         text,
         ...thinking,
         error,
-        modelLabel: message.model,
-        timestamp: Date.now(),
+        modelLabel: message.model ?? pending?.modelLabel,
+        timestamp: pending?.timestamp ?? Date.now(),
       };
       this.put(entry);
       results.push(entry);
     }
+    // 全空轮次（纯 toolCall、无思考无正文无错误）：不产生条目，与快照重建语义一致。
     for (const call of toolCallsOf(message.content)) {
       const updated = this.ensureToolCall(call.id, call.name);
       if (updated) results.push(updated);
