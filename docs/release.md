@@ -46,11 +46,13 @@ pi install npm:pi-hapi-remote
 ## 发布到 Git
 
 ```bash
-git tag v0.1.0 && git push --tags
-pi install git:github.com/<you>/pi-hapi-remote@v0.1.0
+git tag v0.2.0 && git push --tags
+pi install git:github.com/orangelckc/pi-hapi-remote@v0.2.0
 ```
 
-Pi 克隆仓库后在根目录执行安装（读取根 `package.json` 的 `dependencies`）。
+Pi 克隆仓库到 `~/.pi/agent/git/` 后以 `npm install --omit=dev` 安装根 `package.json` 的 `dependencies`。`web/dist` 前端产物已随仓库分发，安装后开箱可用。
+
+升级：pinned 包不随 `pi update --extensions` 更新，需重新执行 `pi install git:github.com/orangelckc/pi-hapi-remote@vX.Y.Z`。
 
 ## 前端（本机同源伺服）
 
@@ -87,6 +89,17 @@ pnpm build:web          # 产物 web/dist（默认伺服目录）
 - **Windows**：代码层面已处理（npx 回退路径使用 `shell: true`；路径一律 `node:path`）；`Ctrl+Shift+R` 快捷键与终端渲染待实测。
 
 ## 版本历史
+
+### 0.2.0
+
+- 前端改为本机同源伺服（移除固定静态托管依赖），会话数据不经任何第三方。
+- 手机端界面重构（Vercel AI SDK 视图模型 + shadcn/ui）。
+- 协议 v2：转发思考过程与助手错误信息。
+- 远端可主动移交控制权回本机；观察者彻底只读化。
+- RPC 可视化状态桥接：RPC 模式下发布版本化分享状态，供 VS Code 等宿主展示。
+- 流式更新合并窗口，降低高频全量更新带来的延迟。
+- 修复：纯工具调用轮次残留空白助手气泡；发送后界面黑屏；同源无 Origin 头请求被误拒。
+- 架构深化：控制流转收拢至 Control Flow、静态伺服拆分为独立模块、条目日志统一。
 
 ### 0.1.0
 

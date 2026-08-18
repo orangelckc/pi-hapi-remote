@@ -33,7 +33,7 @@ Pi 当前进程
 pi install npm:pi-hapi-remote
 
 # git
-pi install git:github.com/<you>/pi-hapi-remote
+pi install git:github.com/orangelckc/pi-hapi-remote
 
 # 本地开发
 git clone <repo> && pnpm install

@@ -1,8 +1,8 @@
 node_modules/
-dist/
+# 仅忽略根级构建产物；web/dist 为发布产物，需随仓库分发
+/dist/
 *.tsbuildinfo
 .vercel/
 .DS_Store
-web/dist/
 web/dev-dist/
 .pi/
