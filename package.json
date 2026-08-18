@@ -1,6 +1,6 @@
 {
   "name": "pi-hapi-remote",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "临时分享并远端控制当前 Pi Session 的扩展包：本机 HTTP Bridge + Tunnelmole 隧道 + 静态 PWA。",
   "type": "module",
   "keywords": [
@@ -39,10 +39,10 @@
     "preview:web": "pnpm --filter pi-hapi-remote-web preview"
   },
   "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
-    "typebox": "*",
-    "@earendil-works/pi-agent-core": "*"
+    "typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "^0.84.2",
