@@ -10,6 +10,7 @@ import {
   type RemoteEvent,
   type SessionSnapshot,
 } from "../protocol.js";
+import { EntryLog } from "../protocol.js";
 
 export type ConnectionPhase =
   | "connecting"
@@ -72,8 +73,7 @@ export class RemoteConnection {
   private cursor = 0;
   private running = false;
   private pollAbort: AbortController | null = null;
-  private entries = new Map<string, RemoteEntry>();
-  private order: string[] = [];
+  private log = new EntryLog<RemoteEntry>();
   private backoffMs = 1_000;
 
   state: ConnectionState = {
@@ -112,7 +112,7 @@ export class RemoteConnection {
   }
 
   private snapshotState(): ConnectionState {
-    return { ...this.state, entries: [...this.order].map((id) => this.entries.get(id)!) };
+    return { ...this.state, entries: this.log.entries() };
   }
 
   // ---- 生命周期 ----
@@ -138,12 +138,7 @@ export class RemoteConnection {
   /** 重新拉取 Snapshot（游标过期或断线恢复）。 */
   async resync(): Promise<void> {
     const snapshot = await this.fetchSnapshot();
-    this.entries.clear();
-    this.order = [];
-    for (const entry of snapshot.entries) {
-      this.entries.set(entry.id, entry);
-      this.order.push(entry.id);
-    }
+    this.log.replace(snapshot.entries);
     this.cursor = snapshot.cursor;
     this.update({
       session: snapshot.session,
@@ -194,16 +189,12 @@ export class RemoteConnection {
     switch (event.type) {
       case "entries_added":
         for (const entry of event.entries) {
-          if (!this.entries.has(entry.id)) this.order.push(entry.id);
-          this.entries.set(entry.id, entry);
+          this.log.put(entry);
         }
         break;
-      case "entry_updated": {
-        const entry = event.entry;
-        if (!this.entries.has(entry.id)) this.order.push(entry.id);
-        this.entries.set(entry.id, entry);
+      case "entry_updated":
+        this.log.put(event.entry);
         break;
-      }
       case "agent_state":
         this.update({ isStreaming: event.isStreaming });
         return;

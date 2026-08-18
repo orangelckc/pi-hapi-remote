@@ -12,6 +12,7 @@ import {
   type RemoteEntry,
   type ToolCallEntry,
 } from "../../shared/protocol.js";
+import { EntryLog } from "../../shared/entry-log.js";
 
 /** 文本截断：超长内容以省略号收尾。 */
 export function truncateText(text: string, maxLength: number): { text: string; truncated: boolean } {
@@ -127,14 +128,12 @@ function toolResultTextOf(content: unknown): { text: string; truncated: boolean 
  * Session Bridge 在每个生命周期事件上调用对应方法并将返回值发布到 Event Journal。
  */
 export class TranscriptProjector {
-  private entries = new Map<string, RemoteEntry>();
-  private order: string[] = [];
+  private log = new EntryLog<RemoteEntry>();
   private seq = 0;
 
   /** 全量重建（分享开始、tree 导航、compaction 后）。 */
   rebuild(branchEntries: SessionEntry[]): void {
-    this.entries.clear();
-    this.order = [];
+    this.log.clear();
     for (const entry of branchEntries) {
       this.absorbEntry(entry);
     }
@@ -142,9 +141,7 @@ export class TranscriptProjector {
 
   /** 当前条目快照（按插入顺序）。 */
   snapshot(): RemoteEntry[] {
-    return this.order
-      .map((id) => this.entries.get(id))
-      .filter((e): e is RemoteEntry => e !== undefined);
+    return this.log.entries();
   }
 
   // ---- 流式助手消息 ----
@@ -164,7 +161,7 @@ export class TranscriptProjector {
 
   /** 流式更新当前助手条目正文与思考过程。 */
   updateAssistantStream(entryId: string, message: { content: unknown }): RemoteEntry | null {
-    const existing = this.entries.get(entryId);
+    const existing = this.log.get(entryId);
     if (!existing || existing.kind !== "assistant_message") return null;
     const updated: RemoteEntry = {
       ...existing,
@@ -181,7 +178,7 @@ export class TranscriptProjector {
     message: { content: unknown; model?: string; errorMessage?: string },
   ): RemoteEntry[] {
     const results: RemoteEntry[] = [];
-    const existing = this.entries.get(entryId);
+    const existing = this.log.get(entryId);
     const text = assistantTextOf(message.content);
     const thinking = thinkingOf(message.content);
     const error = errorMessageOf(message);
@@ -219,7 +216,7 @@ export class TranscriptProjector {
 
   /** 工具开始执行：创建 running 状态的工具条目（若已存在则仅更新参数）。 */
   toolStarted(toolCallId: string, toolName: string, args: unknown): RemoteEntry | null {
-    const existing = this.entries.get(toolCallId);
+    const existing = this.log.get(toolCallId);
     if (existing && existing.kind === "tool_call") {
       const updated: ToolCallEntry = { ...existing, argsPreview: argsPreviewOf(args) };
       this.put(updated);
@@ -245,7 +242,7 @@ export class TranscriptProjector {
     isError: boolean,
   ): RemoteEntry | null {
     const { text, truncated } = toolResultTextOf(content);
-    const existing = this.entries.get(toolCallId);
+    const existing = this.log.get(toolCallId);
     if (existing && existing.kind === "tool_call") {
       const updated: ToolCallEntry = {
         ...existing,
@@ -374,7 +371,7 @@ export class TranscriptProjector {
   }
 
   private ensureToolCall(toolCallId: string, toolName: string): RemoteEntry | null {
-    if (this.entries.has(toolCallId)) return null;
+    if (this.log.has(toolCallId)) return null;
     const entry: ToolCallEntry = {
       kind: "tool_call",
       id: toolCallId,
@@ -388,10 +385,6 @@ export class TranscriptProjector {
   }
 
   private put(entry: RemoteEntry): void {
-    const isNew = !this.entries.has(entry.id);
-    this.entries.set(entry.id, entry);
-    if (isNew) {
-      this.order.push(entry.id);
-    }
+    this.log.put(entry);
   }
 }

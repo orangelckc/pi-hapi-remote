@@ -1,18 +1,15 @@
 /**
  * Remote Bridge（本地 HTTP 服务）+ Command Gateway。
  *
- * 只监听 127.0.0.1 随机端口，同时伺服前端静态产物（web/dist）与
- * Snapshot、长轮询事件、命令提交、一次性 Claim 兑换与控制权申请接口。
- * API 执行严格 Origin 校验、请求体限制、文本长度限制、控制端点限速
- * 与并发长轮询限制；静态资源不做 Origin 校验（顶级导航无 Origin 头）。
+ * 只监听 127.0.0.1 随机端口，路由 Snapshot、长轮询事件、命令提交与
+ * 控制权流转端点。API 执行严格 Origin 校验、请求体限制、控制端点限速
+ * 与并发长轮询限制；静态前端由 Static Frontend 模块同源伺服
+ * （静态资源不做 Origin 校验：顶级导航无 Origin 头）。
  */
-import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
 import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import path from "node:path";
 import { promisify } from "node:util";
-import { createGzip, gzip } from "node:zlib";
+import { gzip } from "node:zlib";
 import {
   ERROR_CODES,
   LIMITS,
@@ -20,35 +17,28 @@ import {
   type CommandAck,
   type DeviceInfo,
   type EventBatch,
-  type RemoteCommand,
-  type RemoteState,
 } from "../../shared/protocol.js";
 import { validateDeviceInfo, validateRemoteCommand } from "../../shared/schemas.js";
-import { CapabilityAuthority } from "./auth.js";
-import { ControlLease } from "./control-lease.js";
-import { EventJournal } from "./event-buffer.js";
-import { SessionBridge } from "./session-bridge.js";
-
-export type ApprovalDecision = "approved" | "denied" | "timeout";
+import type { CapabilityAuthority } from "./auth.js";
+import type { ControlFlow } from "./control-flow.js";
+import type { EventJournal } from "./event-buffer.js";
+import { bearerToken, HttpError, readJsonBody } from "./http.js";
+import type { SessionBridge } from "./session-bridge.js";
+import { StaticFrontend } from "./static-frontend.js";
 
 export interface RemoteServerDeps {
+  /** Viewer 读取鉴权（控制权流转经 control 进行）。 */
   auth: CapabilityAuthority;
-  lease: ControlLease;
+  /** 控制权流转：claim / request / release 的唯一编排点。 */
+  control: ControlFlow;
   journal: EventJournal;
   bridge: SessionBridge;
   /** 允许的浏览器 Origin（隧道公网地址与本地开发地址）。 */
   allowedOrigins: string[];
-  /** 前端静态产物目录（web/dist）；为 null 时返回构建提示页。 */
-  staticDir: string | null;
-  /** 触发本机审批对话。currentControllerLabel 非空时表示将替换现有控制者。 */
-  requestApproval: (
-    device: DeviceInfo,
-    currentControllerLabel: string | undefined,
-  ) => Promise<ApprovalDecision>;
+  /** 前端静态伺服（web/dist；未配置时返回构建提示页）。 */
+  staticFrontend: StaticFrontend;
   /** 远端 Abort 审计回调。 */
   onRemoteAbort: (deviceLabel: string) => void;
-  /** 控制权授予回调（审计 + 事件发布由上层统一处理）。 */
-  onControllerGranted: (device: DeviceInfo, kind: "claimed" | "request_approved") => void;
 }
 
 interface RateBucket {
@@ -57,79 +47,6 @@ interface RateBucket {
 }
 
 const gzipAsync = promisify(gzip);
-
-/** 常见前端产物 MIME 类型。 */
-const MIME_TYPES: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".mjs": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".webmanifest": "application/manifest+json",
-  ".woff2": "font/woff2",
-  ".ico": "image/x-icon",
-  ".txt": "text/plain; charset=utf-8",
-};
-
-/** 可 gzip 压缩的文本类扩展名。 */
-const COMPRESSIBLE_EXTS = new Set([
-  ".html",
-  ".js",
-  ".mjs",
-  ".css",
-  ".json",
-  ".svg",
-  ".webmanifest",
-  ".txt",
-]);
-
-/** 未构建前端时的提示页。 */
-const MISSING_DIST_PAGE = `<!doctype html>
-<meta charset="utf-8">
-<title>Pi HAPI Remote</title>
-<p>前端产物未构建：请在仓库内运行 <code>pnpm build:web</code> 后重新分享，
-或设置 <code>PI_REMOTE_WEB_DIST</code> 指向已构建的目录。</p>`;
-
-function bearerToken(req: IncomingMessage): string | undefined {
-  const header = req.headers.authorization;
-  if (!header || !header.startsWith("Bearer ")) return undefined;
-  return header.slice("Bearer ".length).trim() || undefined;
-}
-
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  const declared = Number(req.headers["content-length"] ?? 0);
-  if (declared > LIMITS.maxBodyBytes) {
-    throw new HttpError(413, ERROR_CODES.payloadTooLarge, "请求体过大");
-  }
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += (chunk as Buffer).length;
-    if (size > LIMITS.maxBodyBytes) {
-      throw new HttpError(413, ERROR_CODES.payloadTooLarge, "请求体过大");
-    }
-    chunks.push(chunk as Buffer);
-  }
-  if (chunks.length === 0) return {};
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    throw new HttpError(400, ERROR_CODES.badRequest, "无效 JSON");
-  }
-}
-
-export class HttpError extends Error {
-  readonly status: number;
-  readonly code: string;
-
-  constructor(status: number, code: string, message: string) {
-    super(message);
-    this.status = status;
-    this.code = code;
-  }
-}
 
 export class RemoteBridgeServer {
   private server: http.Server | null = null;
@@ -148,7 +65,7 @@ export class RemoteBridgeServer {
 
   /** 是否已配置前端静态产物目录。 */
   get hasStaticFrontend(): boolean {
-    return this.deps.staticDir !== null;
+    return this.deps.staticFrontend.available;
   }
 
   async start(): Promise<number> {
@@ -212,7 +129,7 @@ export class RemoteBridgeServer {
       // 前端静态资源：与 API 同源（隧道地址），导航请求无 Origin 头，不做校验。
       const isApi = path === "/v1" || path.startsWith("/v1/");
       if (method === "GET" && !isApi) {
-        await this.serveStatic(req, res, url.pathname);
+        await this.deps.staticFrontend.serve(req, res, url.pathname);
         return;
       }
 
@@ -263,9 +180,9 @@ export class RemoteBridgeServer {
 
   // ---- CORS / Origin ----
 
-  private originOf(req: IncomingMessage): string | null {
+  private originOf(req: IncomingMessage): string | undefined {
     const origin = req.headers.origin;
-    return typeof origin === "string" && origin.length > 0 ? origin : null;
+    return typeof origin === "string" && origin.length > 0 ? origin : undefined;
   }
 
   private requireOrigin(req: IncomingMessage): void {
@@ -277,35 +194,26 @@ export class RemoteBridgeServer {
       throw new HttpError(
         403,
         ERROR_CODES.forbidden,
-        "来源不被允许：请通过分享链接访问页面，而不是直接调用接口",
+        "Origin 不在白名单内：请通过分享链接打开的 PWA 页面访问",
       );
     }
   }
 
   private handlePreflight(req: IncomingMessage, res: ServerResponse): void {
     const origin = this.originOf(req);
+    const headers: Record<string, string> = {
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type",
+      "Access-Control-Max-Age": "600",
+    };
     if (origin && this.deps.allowedOrigins.includes(origin)) {
-      res.setHeader("Access-Control-Allow-Origin", origin);
-      res.setHeader("Vary", "Origin");
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
-      res.setHeader("Access-Control-Max-Age", "86400");
+      headers["Access-Control-Allow-Origin"] = origin;
     }
-    res.writeHead(204);
+    res.writeHead(204, headers);
     res.end();
   }
 
   // ---- 接口实现 ----
-
-  private currentState(): RemoteState {
-    const controller = this.deps.lease.current;
-    return {
-      isStreaming: this.deps.bridge.streaming,
-      controllerDeviceId: controller?.deviceId,
-      controllerLabel: controller?.deviceLabel,
-      localHasControl: controller === null,
-    };
-  }
 
   private requireViewerRole(req: IncomingMessage): "viewer" | "controller" {
     const role = this.deps.auth.verifyViewerToken(bearerToken(req));
@@ -316,10 +224,12 @@ export class RemoteBridgeServer {
   }
 
   private requireController(req: IncomingMessage): DeviceInfo {
+    // 401 与 403 语义不同：前者令牌无效（客户端据此标记凭证失效），
+    // 后者令牌有效但租约已不在远端。
     if (!this.deps.auth.verifyControllerToken(bearerToken(req))) {
       throw new HttpError(401, ERROR_CODES.unauthorized, "令牌无效");
     }
-    const controller = this.deps.lease.current;
+    const controller = this.deps.control.current;
     if (!controller) {
       throw new HttpError(403, ERROR_CODES.forbidden, "控制权已收回");
     }
@@ -328,7 +238,13 @@ export class RemoteBridgeServer {
 
   private async handleSnapshot(req: IncomingMessage, res: ServerResponse): Promise<void> {
     this.requireViewerRole(req);
-    const snapshot = this.deps.bridge.buildSnapshot(this.deps.auth.shareId, this.currentState());
+    const state = this.deps.control.current;
+    const snapshot = this.deps.bridge.buildSnapshot(this.deps.auth.shareId, {
+      isStreaming: this.deps.bridge.streaming,
+      controllerDeviceId: state?.deviceId,
+      controllerLabel: state?.deviceLabel,
+      localHasControl: state === null,
+    });
     if (!snapshot) {
       throw new HttpError(503, ERROR_CODES.unavailable, "会话不可用");
     }
@@ -391,13 +307,11 @@ export class RemoteBridgeServer {
     if (!device) {
       throw new HttpError(400, ERROR_CODES.badRequest, "设备信息无效");
     }
-    if (!this.deps.auth.consumeClaimToken(token)) {
-      throw new HttpError(401, ERROR_CODES.unauthorized, "令牌无效");
+    const result = this.deps.control.claim(token, device);
+    if (!result.ok) {
+      throw new HttpError(result.status, result.code, result.message);
     }
-    const controllerToken = this.deps.auth.issueControllerToken();
-    this.deps.lease.grant(device, "claimed");
-    this.deps.onControllerGranted(device, "claimed");
-    await this.sendJson(res, 200, { controllerToken });
+    await this.sendJson(res, 200, { controllerToken: result.controllerToken });
   }
 
   private async handleControlRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -409,36 +323,27 @@ export class RemoteBridgeServer {
     }
     this.checkRateLimit(`req:${device.deviceId}`);
 
-    const current = this.deps.lease.current;
-    if (current?.deviceId === device.deviceId) {
-      throw new HttpError(409, ERROR_CODES.conflict, "该设备已是控制者");
+    const result = await this.deps.control.request(bearerToken(req), device);
+    if (!result.ok) {
+      throw new HttpError(result.status, result.code, result.message);
     }
-
-    const decision = await this.deps.requestApproval(
-      device,
-      current?.deviceLabel,
-    );
-    if (decision !== "approved") {
-      await this.sendJson(res, 200, { status: decision });
-      return;
-    }
-    const controllerToken = this.deps.auth.issueControllerToken();
-    this.deps.lease.grant(device, "request_approved");
-    this.deps.onControllerGranted(device, "request_approved");
-    await this.sendJson(res, 200, { status: "approved", controllerToken });
+    const responseBody =
+      result.status === "approved"
+        ? { status: result.status, controllerToken: result.controllerToken }
+        : { status: result.status };
+    await this.sendJson(res, 200, responseBody);
   }
 
   /** 当前控制者主动移交控制权给本机。 */
   private async handleControlRelease(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const controller = this.requireController(req);
-    this.checkRateLimit(`cmd:${controller.deviceId}`);
+    const token = bearerToken(req);
+    this.checkRateLimit(`rel:${token?.slice(-16) ?? "anon"}`);
     // 丢弃（可选的空）请求体，保证连接可复用。
     await readJsonBody(req);
-    if (!this.deps.lease.releaseBy(controller.deviceId)) {
-      throw new HttpError(409, ERROR_CODES.conflict, "该设备不是当前控制者");
+    const result = this.deps.control.release(token);
+    if (!result.ok) {
+      throw new HttpError(result.status, result.code, result.message);
     }
-    // 移交后旧 Controller Token 立即作废；租约变化经 lease 监听广播。
-    this.deps.auth.revokeControllerToken();
     await this.sendJson(res, 200, { ok: true } satisfies CommandAck);
   }
 
@@ -461,61 +366,6 @@ export class RemoteBridgeServer {
         if (b.resetAt <= now) this.rateBuckets.delete(k);
       }
     }
-  }
-
-  // ---- 静态前端 ----
-
-  private async serveStatic(
-    req: IncomingMessage,
-    res: ServerResponse,
-    pathname: string,
-  ): Promise<void> {
-    if (!this.deps.staticDir) {
-      res.writeHead(200, {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store",
-      });
-      res.end(MISSING_DIST_PAGE);
-      return;
-    }
-    const root = this.deps.staticDir;
-    let rel: string;
-    try {
-      rel = decodeURIComponent(pathname);
-    } catch {
-      rel = "/";
-    }
-    if (rel === "/" || rel === "") rel = "/index.html";
-    const filePath = path.join(root, path.normalize(rel));
-    // 防路径穿越：解析结果必须仍在产物目录内。
-    if (!filePath.startsWith(root + path.sep)) {
-      throw new HttpError(404, ERROR_CODES.notFound, "资源不存在");
-    }
-    const info = await stat(filePath).catch(() => null);
-    if (!info?.isFile()) {
-      throw new HttpError(404, ERROR_CODES.notFound, "资源不存在");
-    }
-
-    const ext = path.extname(filePath).toLowerCase();
-    const headers: Record<string, string | number> = {
-      "Content-Type": MIME_TYPES[ext] ?? "application/octet-stream",
-      // Vite 带内容哈希的产物可长缓存；其余（index.html / manifest 等）每次校验。
-      "Cache-Control": rel.startsWith("/assets/")
-        ? "public, max-age=31536000, immutable"
-        : "no-cache",
-      Vary: "Accept-Encoding",
-    };
-    const file = createReadStream(filePath).on("error", () => res.destroy());
-    const acceptsGzip = (req.headers["accept-encoding"] ?? "").includes("gzip");
-    if (acceptsGzip && COMPRESSIBLE_EXTS.has(ext)) {
-      headers["Content-Encoding"] = "gzip";
-      res.writeHead(200, headers);
-      file.pipe(createGzip()).on("error", () => res.destroy()).pipe(res);
-      return;
-    }
-    headers["Content-Length"] = info.size;
-    res.writeHead(200, headers);
-    file.pipe(res);
   }
 
   // ---- 响应工具 ----

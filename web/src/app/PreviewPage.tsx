@@ -1,9 +1,11 @@
 /**
- * 开发预览页（仅 DEV 构建可达）：静态模拟数据驱动完整 ChatView，
- * 用于离线验证消息渲染、主题与交互。生产构建中该文件会被裁剪。
+ * 开发预览页（仅 DEV 构建可达）：以静态适配器满足 RemoteChatView
+ * 接口，用模拟数据离线验证消息渲染、主题与交互。
+ * 生产构建中该文件会被裁剪。
  */
 import { useMemo, useState } from "react";
-import type { ConnectionState, RemoteConnection } from "../app/connection.js";
+import type { ConnectionState } from "../app/connection.js";
+import type { RemoteChatView } from "../app/useRemoteChat.js";
 import type { RemoteEntry } from "../protocol.js";
 import {
   entriesToUIMessages,
@@ -140,11 +142,6 @@ function makeState(isStreaming: boolean): ConnectionState {
   };
 }
 
-/** 预览用假连接：仅满足 Composer 的可交互判定。 */
-const fakeConnection = {
-  sendCommand: async (): Promise<void> => {},
-} as unknown as RemoteConnection;
-
 export function PreviewPage(): JSX.Element {
   const [amController, setAmController] = useState(true);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -153,28 +150,29 @@ export function PreviewPage(): JSX.Element {
     () => entriesToUIMessages(previewEntries, cache),
     [cache],
   );
-  const state = makeState(isStreaming);
+
+  const view: RemoteChatView = {
+    state: makeState(isStreaming),
+    messages,
+    amController,
+    sending: false,
+    sendError: null,
+    send: (text) => console.log("[preview] send:", text),
+    abort: () => setIsStreaming((v) => !v),
+    requestControl: async () => "approved",
+    releaseControl: async () => {
+      console.log("[preview] release control");
+    },
+    reset: async () => {},
+  };
 
   return (
     <div className="h-full">
-      <ChatView
-        state={state}
-        amController={amController}
-        connection={fakeConnection}
-        messages={messages}
-        sending={false}
-        sendError={null}
-        onClear={async () => {}}
-        onSend={(text: string) => console.log("[preview] send:", text)}
-        onAbort={() => setIsStreaming((v) => !v)}
-        onRelease={async () => {
-          console.log("[preview] release control");
-        }}
-      />
+      <ChatView view={view} />
       <button
         type="button"
         onClick={() => setAmController((v) => !v)}
-        className="fixed left-2 top-1/2 z-50 -translate-y-1/2 rounded-full bg-card px-2 py-1 text-[10px] text-muted-foreground shadow"
+        className="fixed left-2 z-50 rounded-full bg-card px-2 py-1 text-[10px] text-muted-foreground shadow"
         style={{ top: "calc(50% + 2rem)" }}
       >
         {amController ? "控制中" : "只读"}

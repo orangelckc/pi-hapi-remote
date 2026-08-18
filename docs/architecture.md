@@ -15,8 +15,10 @@ Pi 当前进程
 │  transcript.ts     Transcript Projector      │
 │  event-buffer.ts   Event Journal             │
 │  auth.ts           Capability Authority      │
-│  control-lease.ts  Control Lease             │
+│  control-lease.ts  Control Lease（纯租约）   │
+│  control-flow.ts   Control Flow（流转编排）   │
 │  remote-server.ts  Remote Bridge + Gateway   │
+│  static-frontend.ts Static Frontend          │
 │  audit.ts          审计（custom entry）       │
 │  tui-status.ts     TUI 状态条                │
 │  tunnel/           Tunnel Adapter 抽象       │
@@ -74,16 +76,17 @@ Viewer Token、一次性 Claim Token、Controller Token 的签发与校验：
 
 ### Control Lease（control-lease.ts）
 
-单远端写入者规则：
+纯租约状态机：单远端写入者归属与变化通知（`claimed` / `request_approved` / `replaced` / `local_reclaimed` / `remote_released` / `revoked` / `share_ended`）。不编排副作用。
 
-- 本机默认持有控制权；`grant()` 授予（Claim 兑换或本机批准，可替换现有控制者）、`reclaim()` / `revoke()` / `end()` 释放。
-- 归属变化回调统一驱动：`control_state` 事件发布、审计写入、TUI 状态条刷新与本机输入拦截开关。
+### Control Flow（control-flow.ts）
 
-### Remote Bridge / Command Gateway（remote-server.ts）
+控制权的唯一编排点：Claim 兑换、申请审批、远端移交、本机收回与撤销五种流转在此完成「租约变更 ⇒ 令牌轮换/撤销 ⇒ 审计 ⇒ control_state 广播 ⇒ TUI 刷新」的完整协同。Remote Bridge 只按令牌发起流转，不再接触租约与令牌的协同细节；Control Lease 作为其内部件存在。
 
-`node:http` 实现，只监听 `127.0.0.1` 随机端口；同时同源伺服前端静态产物（`web/dist`）：
+### Remote Bridge / Command Gateway（remote-server.ts + static-frontend.ts）
 
-- 静态路由：`GET /` 与非 `/v1/` 路径 → `web/dist`（路径穿越防护；`/assets/*` 长缓存 immutable，其余 no-cache；文本资源按 `Accept-Encoding` gzip）。
+`node:http` 实现，只监听 `127.0.0.1` 随机端口。API 路由、鉴权入口、限速与 CORS 在 Gateway；前端静态产物由 Static Frontend 模块同源伺服：
+
+- 静态路由：`GET /` 与非 `/v1/` 路径 → Static Frontend（路径穿越防护；`/assets/*` 长缓存 immutable，其余 no-cache；文本资源按 `Accept-Encoding` gzip；未配置时返回构建提示页）。
 - 传输优化：JSON 响应 ≥ 1KB 时 gzip；`keepAliveTimeout` 30s 覆盖长轮询周期，减少经隧道中继的重复握手。
 
 | 接口 | 鉴权 | 说明 |
@@ -94,6 +97,7 @@ Viewer Token、一次性 Claim Token、Controller Token 的签发与校验：
 | `POST /v1/commands` | Controller | prompt / steer / follow_up / abort，幂等 |
 | `POST /v1/control/claim` | Claim（一次性） | 兑换 Controller Token |
 | `POST /v1/control/request` | Viewer | 申请控制权，同步等待本机审批（≤60s） |
+| `POST /v1/control/release` | Controller | 当前控制者主动移交控制权给本机 |
 
 ### Tunnel Adapter（tunnel/）
 
@@ -118,12 +122,14 @@ Viewer Token、一次性 Claim Token、Controller Token 的签发与校验：
 
 React 18 + TypeScript + Vite + vite-plugin-pwa：
 
-- `app/connection.ts`：API 客户端、长轮询循环（指数退避重连）、事件归约、命令幂等发送（网络失败自动同 ID 重试一次）、Claim 兑换与控制申请。
+- `app/connection.ts`：API 客户端、长轮询循环（指数退避重连）、事件归约（基于 shared Entry Log）、命令幂等发送（网络失败自动同 ID 重试一次）、Claim 兑换、控制申请与移交。
 - `app/useRemote.ts`：连接生命周期 Hook，凭证节流持久化。
+- `app/useRemoteChat.ts`：Remote Chat View 的生产装配——连接 + AI SDK 发送链路（useChat + 自定义 ChatTransport）+ 权威 entries → UIMessage 派生 + 乐观消息桥接；UI 层只接触视图接口。
 - `storage/db.ts`：IndexedDB 只存连接信息（Endpoint、Share ID、设备 ID、凭证、游标），不存对话正文；Share 失效自动清除。
 - URL Fragment `#/connect/<base64url payload>` 携带全部连接参数，隧道服务方不可见；解析后立即从地址栏清除。
 - Service Worker 只 precache 应用壳（跨域 API 请求不拦截不缓存）。
 - 命令状态机：空闲=发送（prompt），运行中=立即引导（steer）+ 完成后执行（follow_up）+ 停止（abort）；只读设备显示申请控制权。
+- 开发预览：`/preview` 以静态适配器满足 Remote Chat View 接口（DEV 常量守卫，生产构建裁剪）。
 
 ## 数据流（一次远端 Steer）
 

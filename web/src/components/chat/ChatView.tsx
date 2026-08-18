@@ -1,38 +1,21 @@
 /**
  * 聊天主视图：顶部状态栏、状态横幅、消息列表与输入区。
- * 消息来源为 useChat（AI SDK），由权威 entries 派生注入。
+ * 只依赖 RemoteChatView 视图接口（生产由 useRemoteChat 提供，
+ * 预览由静态适配器提供）。
  */
 import { AlertTriangle, Eye, RadioTower } from "lucide-react";
-import type { ConnectionState, RemoteConnection } from "../../app/connection.js";
-import type { RemoteUIMessage } from "../../chat/ui-messages.js";
-import type { RemoteCommandKind } from "../../chat/transport.js";
+import type { RemoteChatView } from "../../app/useRemoteChat.js";
 import { cn } from "../../lib/utils.js";
 import { EndedOverlay, InvalidOverlay } from "../overlays.js";
 import { ChatHeader } from "./ChatHeader.js";
 import { MessageList } from "./MessageList.js";
 import { Composer } from "./Composer.js";
 
-interface ChatViewProps {
-  state: ConnectionState;
-  amController: boolean;
-  connection: RemoteConnection | null;
-  messages: RemoteUIMessage[];
-  sending: boolean;
-  sendError: string | null;
-  onClear(): Promise<void>;
-  onSend(text: string, kind: RemoteCommandKind): void;
-  onAbort(): void;
-  /** 移交控制权给本机。 */
-  onRelease(): Promise<void>;
-}
-
 function Banner({
   tone,
-  icon,
   children,
 }: {
   tone: "warn" | "danger" | "info";
-  icon?: boolean;
   children: React.ReactNode;
 }): JSX.Element {
   return (
@@ -49,31 +32,22 @@ function Banner({
   );
 }
 
-export function ChatView({
-  state,
-  amController,
-  connection,
-  messages,
-  sending,
-  sendError,
-  onClear,
-  onSend,
-  onAbort,
-  onRelease,
-}: ChatViewProps): JSX.Element {
+export function ChatView({ view }: { view: RemoteChatView }): JSX.Element {
+  const { state, amController } = view;
+
   if (state.phase === "ended") {
-    return <EndedOverlay onClear={() => void onClear()} />;
+    return <EndedOverlay onClear={() => void view.reset()} />;
   }
   if (state.phase === "invalid") {
-    return <InvalidOverlay onClear={() => void onClear()} />;
+    return <InvalidOverlay onClear={() => void view.reset()} />;
   }
 
   return (
     <div className="mx-auto flex h-full w-full max-w-5xl flex-col">
-      <ChatHeader state={state} amController={amController} onRelease={onRelease} />
+      <ChatHeader view={view} />
 
       {state.phase === "reconnecting" && (
-        <Banner tone="warn" icon>
+        <Banner tone="warn">
           <RadioTower className="size-3.5 shrink-0" />
           连接中断，画面保留但不可发送命令；恢复后自动同步。
         </Banner>
@@ -97,17 +71,9 @@ export function ChatView({
         </Banner>
       )}
 
-      <MessageList messages={messages} isStreaming={state.isStreaming} />
+      <MessageList messages={view.messages} isStreaming={state.isStreaming} />
 
-      <Composer
-        state={state}
-        amController={amController}
-        connection={connection}
-        sending={sending}
-        sendError={sendError}
-        onSend={onSend}
-        onAbort={onAbort}
-      />
+      <Composer view={view} />
     </div>
   );
 }

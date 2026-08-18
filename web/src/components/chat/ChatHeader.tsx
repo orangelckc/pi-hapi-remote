@@ -3,7 +3,7 @@
  */
 import { memo, useState } from "react";
 import { ArrowLeftFromLine, Check, Loader2, Monitor, Moon, Sun, X } from "lucide-react";
-import type { ConnectionState } from "../../app/connection.js";
+import type { RemoteChatView } from "../../app/useRemoteChat.js";
 import { useTheme, type Theme } from "../../app/theme.js";
 import { cn } from "../../lib/utils.js";
 import { Badge } from "../ui/badge.js";
@@ -54,18 +54,12 @@ function ThemeMenu(): JSX.Element {
   );
 }
 
-interface ChatHeaderProps {
-  state: ConnectionState;
-  amController: boolean;
-  /** 移交控制权给本机（仅控制者可见入口）。 */
-  onRelease(): Promise<void>;
-}
-
 export const ChatHeader = memo(function ChatHeader({
-  state,
-  amController,
-  onRelease,
-}: ChatHeaderProps): JSX.Element {
+  view,
+}: {
+  view: RemoteChatView;
+}): JSX.Element {
+  const { state, amController, releaseControl } = view;
   const connected = state.phase === "connected";
   const reconnecting = state.phase === "reconnecting";
   const [confirming, setConfirming] = useState(false);
@@ -76,7 +70,7 @@ export const ChatHeader = memo(function ChatHeader({
     setReleasing(true);
     setReleaseError(null);
     try {
-      await onRelease();
+      await releaseControl();
       // 成功后 control_state 事件会把界面切回只读，无需本地处理。
       setConfirming(false);
     } catch (err) {

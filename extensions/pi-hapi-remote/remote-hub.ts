@@ -12,10 +12,12 @@ import qrcode from "qrcode";
 import { LIMITS, type DeviceInfo, type RemoteState } from "../../shared/protocol.js";
 import { audit } from "./audit.js";
 import { CapabilityAuthority, generateShareId } from "./auth.js";
-import { ControlLease, type ControllerInfo } from "./control-lease.js";
+import type { ControllerInfo } from "./control-lease.js";
+import { ControlFlow } from "./control-flow.js";
 import { EventJournal } from "./event-buffer.js";
-import { RemoteBridgeServer, type ApprovalDecision } from "./remote-server.js";
+import { RemoteBridgeServer } from "./remote-server.js";
 import { SessionBridge } from "./session-bridge.js";
+import { StaticFrontend } from "./static-frontend.js";
 import { TunnelmoleAdapter } from "./tunnel/tunnelmole.js";
 import { updateTuiStatus } from "./tui-status.js";
 
@@ -76,7 +78,7 @@ export class RemoteHub {
   private bridge: SessionBridge;
   private journal = new EventJournal();
   private auth: CapabilityAuthority | null = null;
-  private lease: ControlLease | null = null;
+  private control: ControlFlow | null = null;
   private server: RemoteBridgeServer | null = null;
   private tunnel: TunnelmoleAdapter | null = null;
   private sharing = false;
@@ -100,7 +102,7 @@ export class RemoteHub {
   }
 
   get remoteControlled(): boolean {
-    return this.lease?.remoteHeld ?? false;
+    return this.control?.remoteHeld ?? false;
   }
 
   // ---- Session 生命周期 ----
@@ -145,26 +147,25 @@ export class RemoteHub {
     const shareId = generateShareId();
     this.auth = new CapabilityAuthority(shareId);
     const { viewerToken, claimToken } = this.auth.issueTokens();
-    this.lease = new ControlLease({
-      onControllerChange: (controller, reason, replaced) =>
-        this.onControllerChange(controller, reason, replaced, ctx),
+    this.control = new ControlFlow({
+      pi: this.pi,
+      auth: this.auth,
+      journal: this.journal,
+      currentState: () => this.currentState(),
+      requestApproval: (device, currentLabel) =>
+        this.requestApproval(ctx, device, currentLabel),
+      onLeaseChange: () => this.refreshTui(ctx),
     });
 
     this.server = new RemoteBridgeServer({
       auth: this.auth,
-      lease: this.lease,
+      control: this.control,
       journal: this.journal,
       bridge: this.bridge,
       allowedOrigins: this.allowedOrigins(),
-      staticDir: resolveWebDist(),
-      requestApproval: (device, currentLabel) => this.requestApproval(ctx, device, currentLabel),
+      staticFrontend: new StaticFrontend(resolveWebDist()),
       onRemoteAbort: (deviceLabel) => {
         audit(this.pi, "remote_aborted", { deviceLabel });
-      },
-      onControllerGranted: (device, kind) => {
-        audit(this.pi, kind === "claimed" ? "control_claimed" : "control_approved", {
-          deviceLabel: device.deviceLabel,
-        });
       },
     });
 
@@ -233,8 +234,8 @@ export class RemoteHub {
       await this.server.stop();
       this.server = null;
     }
-    this.lease?.end();
-    this.lease = null;
+    this.control?.end();
+    this.control = null;
     this.auth?.revokeAll();
     this.auth = null;
     this.publicUrl = null;
@@ -253,20 +254,12 @@ export class RemoteHub {
 
   /** 本机收回控制权。返回被收回的设备信息（无控制者时为 null）。 */
   reclaim(): ControllerInfo | null {
-    const previous = this.lease?.reclaim() ?? null;
-    if (previous) {
-      this.auth?.revokeControllerToken();
-    }
-    return previous;
+    return this.control?.reclaim() ?? null;
   }
 
   /** 撤销当前远端设备（保留分享，取消其写权限）。 */
   revoke(): ControllerInfo | null {
-    const previous = this.lease?.revoke() ?? null;
-    if (previous) {
-      this.auth?.revokeControllerToken();
-    }
-    return previous;
+    return this.control?.revoke() ?? null;
   }
 
   status(): ShareStatus {
@@ -279,7 +272,7 @@ export class RemoteHub {
       viewerUrl: this.viewerUrl ?? undefined,
       controllerUrl: this.controllerUrl ?? undefined,
       viewerCount: this.journal.waiterCount,
-      controller: this.lease?.current ?? undefined,
+      controller: this.control?.current ?? undefined,
     };
   }
 
@@ -297,7 +290,7 @@ export class RemoteHub {
   }
 
   private currentState(): RemoteState {
-    const controller = this.lease?.current;
+    const controller = this.control?.current;
     return {
       isStreaming: this.bridge.streaming,
       controllerDeviceId: controller?.deviceId,
@@ -306,42 +299,12 @@ export class RemoteHub {
     };
   }
 
-  private onControllerChange(
-    controller: ControllerInfo | null,
-    reason: string,
-    replaced: ControllerInfo | undefined,
-    ctx: ExtensionContext,
-  ): void {
-    if (replaced && controller) {
-      audit(this.pi, "controller_replaced", {
-        detail: `${replaced.deviceLabel} → ${controller.deviceLabel}`,
-      });
-    }
-    switch (reason) {
-      case "local_reclaimed":
-        audit(this.pi, "local_reclaimed", { deviceLabel: replaced?.deviceLabel });
-        break;
-      case "remote_released":
-        audit(this.pi, "remote_released", { deviceLabel: replaced?.deviceLabel });
-        break;
-      case "revoked":
-        audit(this.pi, "control_revoked", { deviceLabel: replaced?.deviceLabel });
-        break;
-      case "share_ended":
-        break;
-      default:
-        break;
-    }
-    this.journal.append({ type: "control_state", state: this.currentState() });
-    this.refreshTui(ctx);
-  }
-
   /** 本机审批对话：显示设备信息；已有控制者时明确提示替换。 */
   private async requestApproval(
     ctx: ExtensionContext,
     device: DeviceInfo,
     currentControllerLabel: string | undefined,
-  ): Promise<ApprovalDecision> {
+  ): Promise<"approved" | "denied"> {
     if (!ctx.hasUI) {
       return "denied";
     }

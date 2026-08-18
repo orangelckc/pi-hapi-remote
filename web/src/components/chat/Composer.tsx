@@ -1,26 +1,14 @@
 /**
  * 输入区：自动增高、桌面/移动差异化回车行为、虚拟键盘与安全区适配。
- * 发送经 useChat（App 注入的 onSend），Abort 走独立命令通道。
+ * 全部动作经 RemoteChatView 视图接口，不直接接触连接对象。
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ListEnd, Loader2, Send, Square } from "lucide-react";
-import type { ConnectionState, RemoteConnection } from "../../app/connection.js";
+import type { RemoteChatView } from "../../app/useRemoteChat.js";
 import type { RemoteCommandKind } from "../../chat/transport.js";
 import { cn } from "../../lib/utils.js";
 import { Button } from "../ui/button.js";
 import { Textarea } from "../ui/textarea.js";
-
-interface ComposerProps {
-  state: ConnectionState;
-  amController: boolean;
-  connection: RemoteConnection | null;
-  sending: boolean;
-  /** useChat 发送链路的错误（transport 抛出）。 */
-  sendError: string | null;
-  /** 经 useChat → ChatTransport 发送命令。 */
-  onSend(text: string, kind: RemoteCommandKind): void;
-  onAbort(): void;
-}
 
 type RequestPhase = "idle" | "waiting" | "denied";
 
@@ -50,15 +38,8 @@ function useKeyboardInset(
   }, [targetRef]);
 }
 
-export function Composer({
-  state,
-  amController,
-  connection,
-  sending,
-  sendError,
-  onSend,
-  onAbort,
-}: ComposerProps): JSX.Element {
+export function Composer({ view }: { view: RemoteChatView }): JSX.Element {
+  const { state, amController, sending, sendError, send, abort } = view;
   const [text, setText] = useState("");
   const [requestPhase, setRequestPhase] = useState<RequestPhase>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -66,7 +47,7 @@ export function Composer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   useKeyboardInset(footerRef);
 
-  const offline = state.phase !== "connected" || connection === null;
+  const offline = state.phase !== "connected";
   const canSend = !offline && !sending && text.trim().length > 0;
 
   // 自动增高（JS 兜底，兼容不支持 field-sizing 的浏览器）。
@@ -77,29 +58,27 @@ export function Composer({
     el.style.height = `${Math.min(el.scrollHeight, MAX_ROWS_PX)}px`;
   }, [text]);
 
-  const send = (kind: RemoteCommandKind): void => {
+  const doSend = (kind: RemoteCommandKind): void => {
     if (!canSend) return;
     setError(null);
-    onSend(text.trim(), kind);
+    send(text.trim(), kind);
     setText("");
   };
 
-  const abort = async (): Promise<void> => {
-    if (!connection || sending) return;
+  const doAbort = async (): Promise<void> => {
     setError(null);
     try {
-      await connection.sendCommand({ id: crypto.randomUUID(), type: "abort" });
+      abort();
     } catch (err) {
       setError(err instanceof Error ? err.message : "操作失败");
     }
   };
 
   const requestControl = async (): Promise<void> => {
-    if (!connection) return;
     setRequestPhase("waiting");
     setError(null);
     try {
-      const result = await connection.requestControl();
+      const result = await view.requestControl();
       setRequestPhase(result === "approved" ? "idle" : "denied");
     } catch (err) {
       setRequestPhase("denied");
@@ -141,7 +120,6 @@ export function Composer({
   }
 
   const streaming = state.isStreaming;
-  const primaryLabel = streaming ? "立即引导" : "发送";
 
   return (
     <footer
@@ -170,7 +148,7 @@ export function Composer({
             // Cmd/Ctrl+Enter 任何设备都发送。
             if (e.metaKey || e.ctrlKey || window.matchMedia("(pointer: fine)").matches) {
               e.preventDefault();
-              send(streaming ? "steer" : "prompt");
+              doSend(streaming ? "steer" : "prompt");
             }
           }}
         />
@@ -182,7 +160,7 @@ export function Composer({
                   variant="ghost"
                   size="sm"
                   disabled={offline || sending || !text.trim()}
-                  onClick={() => send("follow_up")}
+                  onClick={() => doSend("follow_up")}
                 >
                   <ListEnd className="size-3.5" />
                   完成后执行
@@ -191,7 +169,7 @@ export function Composer({
                   variant="danger"
                   size="sm"
                   disabled={offline || sending}
-                  onClick={() => void abort()}
+                  onClick={() => void doAbort()}
                 >
                   <Square className="size-3" />
                   停止
@@ -203,14 +181,14 @@ export function Composer({
             size="sm"
             className={cn("min-w-20", !streaming && "px-5")}
             disabled={!canSend}
-            onClick={() => send(streaming ? "steer" : "prompt")}
+            onClick={() => doSend(streaming ? "steer" : "prompt")}
           >
             {sending ? (
               <Loader2 className="size-4 animate-spin" />
             ) : (
               <Send className="size-4" />
             )}
-            {sending ? "发送中" : primaryLabel}
+            {sending ? "发送中" : streaming ? "立即引导" : "发送"}
           </Button>
         </div>
         {offline && (

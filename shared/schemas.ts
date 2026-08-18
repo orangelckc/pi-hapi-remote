@@ -8,6 +8,7 @@ import {
   LIMITS,
   type DeviceInfo,
   type RemoteCommand,
+  type RemoteCommandType,
 } from "./protocol.js";
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -27,14 +28,25 @@ export function validateDeviceInfo(value: unknown): DeviceInfo | null {
   return { deviceId, deviceLabel };
 }
 
-const COMMAND_TYPES = new Set(["prompt", "steer", "follow_up", "abort"]);
+/** 命令类型白名单。satisfies 保证与 RemoteCommandType 严格互镜：
+ * 协议新增命令类型而此处未同步时，编译期即报错。 */
+const COMMAND_TYPES = {
+  prompt: true,
+  steer: true,
+  follow_up: true,
+  abort: true,
+} as const satisfies Record<RemoteCommandType, true>;
+
+function isCommandType(value: string): value is RemoteCommandType {
+  return value in COMMAND_TYPES;
+}
 
 /** 校验远端命令。返回 null 表示请求体不合法。 */
 export function validateRemoteCommand(value: unknown): RemoteCommand | null {
   if (!isRecord(value)) return null;
   const { id, type, text } = value;
   if (!isString(id) || id.length === 0 || id.length > 128) return null;
-  if (!isString(type) || !COMMAND_TYPES.has(type)) return null;
+  if (!isString(type) || !isCommandType(type)) return null;
 
   if (type === "abort") {
     return { id, type: "abort" };
@@ -42,5 +54,5 @@ export function validateRemoteCommand(value: unknown): RemoteCommand | null {
 
   if (!isString(text) || text.length === 0) return null;
   if (text.length > LIMITS.maxTextLength) return null;
-  return { id, type, text } as RemoteCommand;
+  return { id, type, text };
 }
