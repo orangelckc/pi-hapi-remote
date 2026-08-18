@@ -1,9 +1,45 @@
 /**
- * 全屏覆盖层：欢迎页、分享结束、凭证失效。
+ * 全屏覆盖层：欢迎页、分享结束、凭证失效、渲染崩溃。
  */
-import { CircleSlash2, KeyRound, TerminalSquare } from "lucide-react";
+import { Component, type ReactNode } from "react";
+import { AlertTriangle, CircleSlash2, KeyRound, TerminalSquare } from "lucide-react";
 import { Button } from "./ui/button.js";
 import { Card, CardContent } from "./ui/card.js";
+
+/**
+ * 顶层渲染错误边界：未捕获的渲染异常不再卸载整树（黑屏），
+ * 而是显示可恢复的错误界面。
+ */
+export class ErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error): { error: Error } {
+    return { error };
+  }
+
+  render(): ReactNode {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div className="flex h-full items-center justify-center p-6">
+        <Card className="w-full max-w-sm text-center">
+          <CardContent className="flex flex-col items-center gap-2 pt-6">
+            <AlertTriangle className="size-10 text-danger" strokeWidth={1.5} />
+            <h2 className="text-lg font-semibold">界面渲染出错</h2>
+            <p className="break-words font-mono text-xs text-muted-foreground">
+              {this.state.error.message}
+            </p>
+            <Button className="mt-2" onClick={() => window.location.reload()}>
+              重新加载
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+}
 
 export function Welcome(): JSX.Element {
   return (

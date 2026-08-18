@@ -107,8 +107,18 @@ export function useRemoteChat(remote: RemoteSession): RemoteChatView | null {
 
   const send = useCallback(
     (text: string, kind: RemoteCommandKind): void => {
-      pendingRef.current = { id: crypto.randomUUID(), text, at: Date.now() };
-      void chat.sendMessage({ text }, { body: { command: kind } });
+      const id = crypto.randomUUID();
+      const at = Date.now();
+      pendingRef.current = { id, text, at };
+      // metadata 必传：useChat 会立即追加乐观用户消息并渲染，
+      // 缺失时 EntryItem 读取 message.metadata.entry 抛错导致整树卸载（黑屏）。
+      void chat.sendMessage(
+        {
+          text,
+          metadata: { entry: { kind: "user_message", id, text, timestamp: at } },
+        },
+        { body: { command: kind } },
+      );
     },
     [chat],
   );

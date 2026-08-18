@@ -167,11 +167,16 @@ function ToolCallCard({ entry }: { entry: ToolCallEntry }): JSX.Element {
   );
 }
 
-function UserBubble({ message }: { message: RemoteUIMessage }): JSX.Element {
-  const text = message.parts
+/** 提取消息的纯文本内容（text parts 拼接）。 */
+function messageText(message: RemoteUIMessage): string {
+  return message.parts
     .filter((p): p is { type: "text"; text: string } => p.type === "text")
     .map((p) => p.text)
     .join("");
+}
+
+function UserBubble({ message }: { message: RemoteUIMessage }): JSX.Element {
+  const text = messageText(message);
   return (
     <div className="fade-in-up flex justify-end">
       <div className="max-w-[85%] rounded-xl rounded-br-sm bg-primary px-3 py-2 text-primary-foreground shadow-sm">
@@ -261,7 +266,22 @@ export const EntryItem = memo(function EntryItem({
 }: {
   message: RemoteUIMessage;
 }): JSX.Element {
-  switch (message.metadata.entry.kind) {
+  const entry = message.metadata?.entry;
+  // 防御：无 metadata 的消息（如外部注入）降级为纯文本气泡，
+  // 避免渲染抛错导致整树卸载。
+  if (!entry) {
+    const text = messageText(message);
+    return (
+      <div className="fade-in-up flex justify-end">
+        <div className="max-w-[85%] rounded-xl rounded-br-sm bg-primary px-3 py-2 text-primary-foreground shadow-sm">
+          <div className="whitespace-pre-wrap break-words text-[14.5px] leading-relaxed">
+            {text}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  switch (entry.kind) {
     case "user_message":
       return <UserBubble message={message} />;
     case "assistant_message":
