@@ -159,7 +159,6 @@ export function PreviewPage(): JSX.Element {
     sendError: null,
     send: (text) => console.log("[preview] send:", text),
     abort: () => setIsStreaming((v) => !v),
-    requestControl: async () => "approved",
     releaseControl: async () => {
       console.log("[preview] release control");
     },

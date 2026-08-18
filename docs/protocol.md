@@ -109,19 +109,6 @@ type RemoteCommand =
 
 一次性：第二个设备再用同一 Claim 即 `401`。兑换即替换现有控制者（QR 视为本机用户的预先授权）。
 
-### POST /v1/control/request
-
-```jsonc
-// 请求：Bearer <viewerToken>
-{ "deviceId": "…", "deviceLabel": "…" }
-// 响应（同步等待本机审批，最长 60s）
-{ "status": "approved", "controllerToken": "…" }
-{ "status": "denied" }
-{ "status": "timeout" }
-```
-
-本机审批界面显示设备信息；已有控制者时明确提示"将替换当前控制者"。
-
 ### POST /v1/control/release
 
 ```jsonc
@@ -132,7 +119,7 @@ type RemoteCommand =
 ```
 
 当前控制者主动移交控制权给本机（保留分享）。非控制者或令牌已失效时
-`403`/`401`；移交后旧 Controller Token 立即作废，重新接管需 Claim 或申请批准。
+`403`/`401`；移交后旧 Controller Token 立即作废，重新接管只能使用仍有效的一次性 Claim。
 
 ## 条目模型
 
@@ -164,9 +151,8 @@ type RemoteEntry =
 | 长轮询最长等待 | 25 s |
 | 流式条目更新合并窗口 | 50 ms（窗口内连续帧合并为一帧发布） |
 | 并发长轮询上限 | 32（超出立即返回空批） |
-| 控制端点限速 | 30 次/分钟/设备（claim/request/commands） |
+| 控制端点限速 | 30 次/分钟/设备（claim/commands） |
 | 事件缓冲容量 | 2000（覆盖后旧游标触发重同步） |
-| 控制申请等待 | 60 s |
 | 隧道启动超时 | 30 s |
 
 ## 错误码

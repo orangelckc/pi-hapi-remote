@@ -17,8 +17,6 @@ import {
 } from "../chat/ui-messages.js";
 import { RemoteChatTransport, type RemoteCommandKind } from "../chat/transport.js";
 
-export type ControlRequestOutcome = "approved" | "denied" | "timeout";
-
 /** 聊天界面对远端会话的完整视图接口。 */
 export interface RemoteChatView {
   state: ConnectionState;
@@ -30,8 +28,6 @@ export interface RemoteChatView {
   send(text: string, kind: RemoteCommandKind): void;
   /** 中止 Agent 运行（独立命令通道）。 */
   abort(): void;
-  /** 只读设备申请控制权（等待本机审批）。 */
-  requestControl(): Promise<ControlRequestOutcome>;
   /** 控制者移交控制权给本机。 */
   releaseControl(): Promise<void>;
   /** 清除凭证并返回首页。 */
@@ -130,12 +126,6 @@ export function useRemoteChat(remote: RemoteSession): RemoteChatView | null {
     });
   }, []);
 
-  const requestControl = useCallback((): Promise<ControlRequestOutcome> => {
-    const connection = connectionRef.current;
-    if (!connection) return Promise.resolve<ControlRequestOutcome>("denied");
-    return connection.requestControl();
-  }, []);
-
   const releaseControl = useCallback((): Promise<void> => {
     const connection = connectionRef.current;
     if (!connection) return Promise.reject(new Error("连接不可用"));
@@ -153,7 +143,6 @@ export function useRemoteChat(remote: RemoteSession): RemoteChatView | null {
     sendError: chat.error?.message ?? null,
     send,
     abort,
-    requestControl,
     releaseControl,
     reset: remote.clearCredentials,
   };

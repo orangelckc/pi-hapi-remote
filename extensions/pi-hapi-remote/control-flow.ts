@@ -1,7 +1,7 @@
 /**
  * Control Flow（深模块）：控制权流转的唯一编排点。
  *
- * Claim 兑换、申请审批、远端移交、本机收回与撤销五种流转都在此完成
+ * Claim 兑换、远端移交、本机收回与撤销四种流转都在此完成
  * 「租约变更 ⇒ 令牌轮换/撤销 ⇒ 审计 ⇒ control_state 广播」的完整协同。
  * Remote Bridge 只按令牌发起流转；Control Lease 保持纯租约状态，
  * 作为本模块的内部件存在，外部不再直接接触。
@@ -13,19 +13,12 @@ import type { CapabilityAuthority } from "./auth.js";
 import { ControlLease, type ControllerInfo, type LeaseChangeReason } from "./control-lease.js";
 import type { EventJournal } from "./event-buffer.js";
 
-export type ApprovalDecision = "approved" | "denied" | "timeout";
-
 export interface ControlFlowDeps {
   pi: ExtensionAPI;
   auth: CapabilityAuthority;
   journal: EventJournal;
   /** 聚合当前 Agent 与控制状态（广播 control_state 用）。 */
   currentState(): RemoteState;
-  /** 本机审批对话；currentControllerLabel 非空时表示将替换现有控制者。 */
-  requestApproval(
-    device: DeviceInfo,
-    currentControllerLabel: string | undefined,
-  ): Promise<ApprovalDecision>;
   /** 租约归属变化后刷新 TUI。 */
   onLeaseChange(): void;
 }
@@ -37,12 +30,6 @@ export interface ControlFlowError {
   code: string;
   message: string;
 }
-
-/** 申请控制权的完整结果。 */
-export type ControlRequestResult =
-  | ControlFlowError
-  | { ok: true; status: "approved"; controllerToken: string }
-  | { ok: true; status: "denied" | "timeout" };
 
 export class ControlFlow {
   private deps: ControlFlowDeps;
@@ -79,24 +66,6 @@ export class ControlFlow {
     const controllerToken = this.deps.auth.issueControllerToken();
     this.lease.grant(device, "claimed");
     return { ok: true, controllerToken };
-  }
-
-  /** 申请控制权：Viewer 鉴权、本机审批、授予并轮换令牌。 */
-  async request(token: string | undefined, device: DeviceInfo): Promise<ControlRequestResult> {
-    if (!this.deps.auth.verifyViewerToken(token)) {
-      return { ok: false, status: 401, code: "unauthorized", message: "令牌无效" };
-    }
-    const current = this.lease.current;
-    if (current?.deviceId === device.deviceId) {
-      return { ok: false, status: 409, code: "conflict", message: "该设备已是控制者" };
-    }
-    const decision = await this.deps.requestApproval(device, current?.deviceLabel);
-    if (decision !== "approved") {
-      return { ok: true, status: decision };
-    }
-    const controllerToken = this.deps.auth.issueControllerToken();
-    this.lease.grant(device, "request_approved");
-    return { ok: true, status: "approved", controllerToken };
   }
 
   /** 远端移交：Controller 鉴权、归属校验、释放租约并作废旧令牌。 */
@@ -146,9 +115,6 @@ export class ControlFlow {
     switch (reason) {
       case "claimed":
         audit(this.deps.pi, "control_claimed", { deviceLabel: controller?.deviceLabel });
-        break;
-      case "request_approved":
-        audit(this.deps.pi, "control_approved", { deviceLabel: controller?.deviceLabel });
         break;
       case "local_reclaimed":
         audit(this.deps.pi, "local_reclaimed", { deviceLabel: replaced?.deviceLabel });

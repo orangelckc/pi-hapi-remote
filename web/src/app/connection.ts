@@ -224,6 +224,13 @@ export class RemoteConnection {
     return `${base}${path}`;
   }
 
+  private readHeaders(): Record<string, string> {
+    return {
+      Authorization: `Bearer ${this.readToken}`,
+      "X-Pi-Remote-Device-Id": this.device.deviceId,
+    };
+  }
+
   private async readJson(response: Response): Promise<never> {
     let code = "error";
     let message = `请求失败（${response.status}）`;
@@ -240,7 +247,7 @@ export class RemoteConnection {
   private async fetchSnapshot(): Promise<SessionSnapshot> {
     const response = await fetchWithTimeout(
       this.url("/v1/snapshot"),
-      { headers: { Authorization: `Bearer ${this.readToken}` } },
+      { headers: this.readHeaders() },
       30_000,
     );
     if (!response.ok) await this.readJson(response);
@@ -258,7 +265,7 @@ export class RemoteConnection {
   private async getEvents(cursor: number, waitMs: number) {
     const response = await fetchWithTimeout(
       this.url(`/v1/events?cursor=${cursor}&wait=${waitMs}`),
-      { headers: { Authorization: `Bearer ${this.readToken}` } },
+      { headers: this.readHeaders() },
       waitMs + POLL_BUFFER_MS,
     );
     if (!response.ok) await this.readJson(response);
@@ -346,31 +353,6 @@ export class RemoteConnection {
     if (!response.ok) await this.readJson(response);
     // 服务端已作废该令牌；本地同步清除，持久化由下一次状态变化触发。
     this.credentials.controllerToken = undefined;
-  }
-
-  /** 申请控制权（等待本机审批，最长约 60 秒）。 */
-  async requestControl(): Promise<"approved" | "denied" | "timeout"> {
-    const response = await fetchWithTimeout(
-      this.url("/v1/control/request"),
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.credentials.viewerToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(this.device),
-      },
-      LIMITS.controlRequestTimeoutMs + POLL_BUFFER_MS,
-    );
-    if (!response.ok) await this.readJson(response);
-    const body = (await response.json()) as {
-      status: "approved" | "denied" | "timeout";
-      controllerToken?: string;
-    };
-    if (body.status === "approved" && body.controllerToken) {
-      this.credentials.controllerToken = body.controllerToken;
-    }
-    return body.status;
   }
 
   /** 更新持久化用的凭证视图。 */

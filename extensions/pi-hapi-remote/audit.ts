@@ -12,9 +12,6 @@ export interface RemoteAuditData {
     | "share_started"
     | "share_stopped"
     | "control_claimed"
-    | "control_requested"
-    | "control_approved"
-    | "control_denied"
     | "controller_replaced"
     | "control_revoked"
     | "local_reclaimed"
@@ -31,9 +28,6 @@ const EVENT_LABELS: Record<RemoteAuditData["event"], string> = {
   share_started: "分享开始",
   share_stopped: "分享停止",
   control_claimed: "QR 兑换控制权",
-  control_requested: "设备申请控制权",
-  control_approved: "批准设备控制权",
-  control_denied: "拒绝设备控制权",
   controller_replaced: "控制者被替换",
   control_revoked: "撤销远端设备",
   local_reclaimed: "本机收回控制权",

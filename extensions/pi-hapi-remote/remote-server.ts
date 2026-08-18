@@ -37,6 +37,8 @@ export interface RemoteServerDeps {
   allowedOrigins: string[];
   /** 前端静态伺服（web/dist；未配置时返回构建提示页）。 */
   staticFrontend: StaticFrontend;
+  /** 观察者在线数量变化。 */
+  onViewerCountChange: (count: number) => void;
   /** 远端 Abort 审计回调。 */
   onRemoteAbort: (deviceLabel: string) => void;
 }
@@ -46,6 +48,13 @@ interface RateBucket {
   resetAt: number;
 }
 
+interface RemotePresence {
+  role: "viewer" | "controller";
+  expiresAt: number;
+}
+
+const DEVICE_ID_HEADER = "x-pi-remote-device-id";
+const PRESENCE_TTL_MS = LIMITS.longPollMaxWaitMs + 15_000;
 const gzipAsync = promisify(gzip);
 
 export class RemoteBridgeServer {
@@ -53,6 +62,8 @@ export class RemoteBridgeServer {
   private portValue: number | null = null;
   private deps: RemoteServerDeps;
   private rateBuckets = new Map<string, RateBucket>();
+  private presences = new Map<string, RemotePresence>();
+  private presenceTimer: ReturnType<typeof setTimeout> | undefined;
   private closed = false;
 
   constructor(deps: RemoteServerDeps) {
@@ -66,6 +77,11 @@ export class RemoteBridgeServer {
   /** 是否已配置前端静态产物目录。 */
   get hasStaticFrontend(): boolean {
     return this.deps.staticFrontend.available;
+  }
+
+  /** 当前在线的纯观察设备数量；控制者不计入观察者。 */
+  get viewerCount(): number {
+    return this.countViewers();
   }
 
   async start(): Promise<number> {
@@ -97,6 +113,11 @@ export class RemoteBridgeServer {
 
   async stop(): Promise<void> {
     this.closed = true;
+    if (this.presenceTimer) clearTimeout(this.presenceTimer);
+    this.presenceTimer = undefined;
+    const previousViewerCount = this.countViewers();
+    this.presences.clear();
+    if (previousViewerCount > 0) this.deps.onViewerCountChange(0);
     const server = this.server;
     this.server = null;
     if (!server) return;
@@ -156,10 +177,6 @@ export class RemoteBridgeServer {
         await this.handleClaim(req, res);
         return;
       }
-      if (path === "/v1/control/request" && method === "POST") {
-        await this.handleControlRequest(req, res);
-        return;
-      }
       if (path === "/v1/control/release" && method === "POST") {
         await this.handleControlRelease(req, res);
         return;
@@ -203,7 +220,7 @@ export class RemoteBridgeServer {
     const origin = this.originOf(req);
     const headers: Record<string, string> = {
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Authorization, Content-Type",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Pi-Remote-Device-Id",
       "Access-Control-Max-Age": "600",
     };
     if (origin && this.deps.allowedOrigins.includes(origin)) {
@@ -237,7 +254,8 @@ export class RemoteBridgeServer {
   }
 
   private async handleSnapshot(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    this.requireViewerRole(req);
+    const role = this.requireViewerRole(req);
+    this.touchPresence(req, role);
     const state = this.deps.control.current;
     const snapshot = this.deps.bridge.buildSnapshot(this.deps.auth.shareId, {
       isStreaming: this.deps.bridge.streaming,
@@ -256,7 +274,8 @@ export class RemoteBridgeServer {
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
-    this.requireViewerRole(req);
+    const role = this.requireViewerRole(req);
+    this.touchPresence(req, role);
     const cursorRaw = url.searchParams.get("cursor");
     const cursor = cursorRaw === null ? 0 : Number(cursorRaw);
     if (!Number.isInteger(cursor) || cursor < 0) {
@@ -314,26 +333,6 @@ export class RemoteBridgeServer {
     await this.sendJson(res, 200, { controllerToken: result.controllerToken });
   }
 
-  private async handleControlRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    this.requireViewerRole(req);
-    const body = await readJsonBody(req);
-    const device = validateDeviceInfo(body);
-    if (!device) {
-      throw new HttpError(400, ERROR_CODES.badRequest, "设备信息无效");
-    }
-    this.checkRateLimit(`req:${device.deviceId}`);
-
-    const result = await this.deps.control.request(bearerToken(req), device);
-    if (!result.ok) {
-      throw new HttpError(result.status, result.code, result.message);
-    }
-    const responseBody =
-      result.status === "approved"
-        ? { status: result.status, controllerToken: result.controllerToken }
-        : { status: result.status };
-    await this.sendJson(res, 200, responseBody);
-  }
-
   /** 当前控制者主动移交控制权给本机。 */
   private async handleControlRelease(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const token = bearerToken(req);
@@ -345,6 +344,67 @@ export class RemoteBridgeServer {
       throw new HttpError(result.status, result.code, result.message);
     }
     await this.sendJson(res, 200, { ok: true } satisfies CommandAck);
+  }
+
+  // ---- 在线设备 ----
+
+  private touchPresence(req: IncomingMessage, role: "viewer" | "controller"): void {
+    const deviceId = req.headers[DEVICE_ID_HEADER];
+    if (
+      typeof deviceId !== "string" ||
+      deviceId.length === 0 ||
+      deviceId.length > 128 ||
+      !/^[A-Za-z0-9._:-]+$/u.test(deviceId)
+    ) return;
+
+    const previousViewerCount = this.countViewers();
+    this.presences.set(deviceId, {
+      role,
+      expiresAt: Date.now() + PRESENCE_TTL_MS,
+    });
+    const nextViewerCount = this.countViewers();
+    if (nextViewerCount !== previousViewerCount) {
+      this.deps.onViewerCountChange(nextViewerCount);
+    }
+    this.schedulePresenceExpiry();
+  }
+
+  private countViewers(): number {
+    let count = 0;
+    for (const presence of this.presences.values()) {
+      if (presence.role === "viewer") count += 1;
+    }
+    return count;
+  }
+
+  private schedulePresenceExpiry(): void {
+    if (this.presenceTimer) clearTimeout(this.presenceTimer);
+    let nextExpiry = Number.POSITIVE_INFINITY;
+    for (const presence of this.presences.values()) {
+      nextExpiry = Math.min(nextExpiry, presence.expiresAt);
+    }
+    if (!Number.isFinite(nextExpiry)) {
+      this.presenceTimer = undefined;
+      return;
+    }
+    this.presenceTimer = setTimeout(
+      () => this.expirePresences(),
+      Math.max(1, nextExpiry - Date.now()),
+    );
+  }
+
+  private expirePresences(): void {
+    this.presenceTimer = undefined;
+    const previousViewerCount = this.countViewers();
+    const now = Date.now();
+    for (const [deviceId, presence] of this.presences) {
+      if (presence.expiresAt <= now) this.presences.delete(deviceId);
+    }
+    const nextViewerCount = this.countViewers();
+    if (nextViewerCount !== previousViewerCount) {
+      this.deps.onViewerCountChange(nextViewerCount);
+    }
+    this.schedulePresenceExpiry();
   }
 
   // ---- 限速 ----

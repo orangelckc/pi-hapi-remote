@@ -77,11 +77,11 @@ Viewer Token、一次性 Claim Token、Controller Token 的签发与校验：
 
 ### Control Lease（control-lease.ts）
 
-纯租约状态机：单远端写入者归属与变化通知（`claimed` / `request_approved` / `replaced` / `local_reclaimed` / `remote_released` / `revoked` / `share_ended`）。不编排副作用。
+纯租约状态机：单远端写入者归属与变化通知（`claimed` / `replaced` / `local_reclaimed` / `remote_released` / `revoked` / `share_ended`）。不编排副作用。
 
 ### Control Flow（control-flow.ts）
 
-控制权的唯一编排点：Claim 兑换、申请审批、远端移交、本机收回与撤销五种流转在此完成「租约变更 ⇒ 令牌轮换/撤销 ⇒ 审计 ⇒ control_state 广播 ⇒ TUI 刷新」的完整协同。Remote Bridge 只按令牌发起流转，不再接触租约与令牌的协同细节；Control Lease 作为其内部件存在。
+控制权的唯一编排点：Claim 兑换、远端移交、本机收回与撤销四种流转在此完成「租约变更 ⇒ 令牌轮换/撤销 ⇒ 审计 ⇒ control_state 广播 ⇒ TUI 刷新」的完整协同。Remote Bridge 只按令牌发起流转，不再接触租约与令牌的协同细节；Control Lease 作为其内部件存在。Viewer 不存在升级控制权的路径。
 
 ### Remote Bridge / Command Gateway（remote-server.ts + static-frontend.ts）
 
@@ -97,7 +97,6 @@ Viewer Token、一次性 Claim Token、Controller Token 的签发与校验：
 | `GET /v1/events?cursor&wait` | Viewer 或 Controller | 长轮询增量事件（≤25s） |
 | `POST /v1/commands` | Controller | prompt / steer / follow_up / abort，幂等 |
 | `POST /v1/control/claim` | Claim（一次性） | 兑换 Controller Token |
-| `POST /v1/control/request` | Viewer | 申请控制权，同步等待本机审批（≤60s） |
 | `POST /v1/control/release` | Controller | 当前控制者主动移交控制权给本机 |
 
 ### Tunnel Adapter（tunnel/）
@@ -115,7 +114,7 @@ Viewer Token、一次性 Claim Token、Controller Token 的签发与校验：
 
 ### RPC 宿主桥接（rpc-status.ts）
 
-RPC 模式不支持自定义 TUI 组件，因此扩展通过保留的 `setWidget` key 发布带版本前缀的 base64url JSON。宿主识别后必须按机器协议处理，不得作为普通 Widget 渲染。状态包含分享阶段、链接、一次性 Claim 是否可用、观察连接数和控制者信息；不单独传输明文 Token，能力凭证仍只存在于现有 Fragment 分享 URL 中。`/remote sync` 用于宿主在恢复 Webview 或刷新快照后静默重发权威状态。
+RPC 模式不支持自定义 TUI 组件，因此扩展通过保留的 `setWidget` key 发布带版本前缀的 base64url JSON。宿主识别后必须按机器协议处理，不得作为普通 Widget 渲染。状态包含分享阶段、链接、一次性 Claim 是否可用、在线观察设备数和控制者信息；观察设备由 PWA Device ID 与长轮询心跳维护，控制者不计入观察者。状态不单独传输明文 Token，能力凭证仍只存在于现有 Fragment 分享 URL 中。`/remote sync` 用于宿主在恢复 Webview 或刷新快照后静默重发权威状态。
 
 ### TUI（tui-status.ts + index.ts）
 

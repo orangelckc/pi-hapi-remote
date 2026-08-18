@@ -10,8 +10,6 @@ import { cn } from "../../lib/utils.js";
 import { Button } from "../ui/button.js";
 import { Textarea } from "../ui/textarea.js";
 
-type RequestPhase = "idle" | "waiting" | "denied";
-
 const MAX_ROWS_PX = 8 * 24;
 
 /** 虚拟键盘弹起时的可视高度差（iOS PWA 下 body 不自动收缩）。 */
@@ -41,7 +39,6 @@ function useKeyboardInset(
 export function Composer({ view }: { view: RemoteChatView }): JSX.Element {
   const { state, amController, sending, sendError, send, abort } = view;
   const [text, setText] = useState("");
-  const [requestPhase, setRequestPhase] = useState<RequestPhase>("idle");
   const [error, setError] = useState<string | null>(null);
   const footerRef = useRef<HTMLElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -74,18 +71,6 @@ export function Composer({ view }: { view: RemoteChatView }): JSX.Element {
     }
   };
 
-  const requestControl = async (): Promise<void> => {
-    setRequestPhase("waiting");
-    setError(null);
-    try {
-      const result = await view.requestControl();
-      setRequestPhase(result === "approved" ? "idle" : "denied");
-    } catch (err) {
-      setRequestPhase("denied");
-      setError(err instanceof Error ? err.message : "申请失败");
-    }
-  };
-
   if (!amController) {
     return (
       <footer
@@ -93,28 +78,9 @@ export function Composer({ view }: { view: RemoteChatView }): JSX.Element {
         className="flex shrink-0 flex-col gap-2.5 border-t border-border/70 bg-background/85 px-4 pt-2.5 backdrop-blur-md"
         style={{ paddingBottom: "calc(0.625rem + max(env(safe-area-inset-bottom,0px), var(--keyboard-inset, 0px)))" }}
       >
-        {requestPhase === "denied" ? (
-          <p className="text-center text-xs text-warn">
-            本机未批准控制申请（或已超时）。你可以继续只读观察。
-          </p>
-        ) : requestPhase === "waiting" ? (
-          <p className="flex items-center justify-center gap-1.5 text-center text-xs text-muted-foreground">
-            <Loader2 className="size-3 animate-spin" />
-            等待本机用户审批…（最长 60 秒）
-          </p>
-        ) : (
-          <p className="text-center text-xs text-muted-foreground">
-            只读模式 · 无法发送消息
-          </p>
-        )}
-        {error && <p className="text-center text-xs text-danger">{error}</p>}
-        <Button
-          variant="secondary"
-          disabled={offline || requestPhase === "waiting"}
-          onClick={() => void requestControl()}
-        >
-          申请控制权
-        </Button>
+        <p className="text-center text-xs text-muted-foreground">
+          只读观察 · 无法发送消息或申请控制权
+        </p>
       </footer>
     );
   }

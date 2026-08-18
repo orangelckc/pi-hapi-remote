@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import qrcode from "qrcode";
-import { LIMITS, type DeviceInfo, type RemoteState } from "../../shared/protocol.js";
+import type { RemoteState } from "../../shared/protocol.js";
 import { audit } from "./audit.js";
 import { CapabilityAuthority, generateShareId } from "./auth.js";
 import type { ControllerInfo } from "./control-lease.js";
@@ -59,6 +59,21 @@ function resolveWebDist(): string | null {
   return existsSync(candidate) ? candidate : null;
 }
 
+/** 停止序列的总体预算：任一环节挂起也不允许状态机卡在 stopping。 */
+const STOP_STEP_TIMEOUT_MS = 5_000;
+
+async function withTimeout(label: string, task: Promise<void>): Promise<void> {
+  await Promise.race([
+    task,
+    new Promise<void>((_, reject) =>
+      setTimeout(
+        () => reject(new Error(`${label}超时（${STOP_STEP_TIMEOUT_MS / 1000}s）`)),
+        STOP_STEP_TIMEOUT_MS,
+      ).unref?.(),
+    ),
+  ]);
+}
+
 /** 按任意键关闭的展示组件。 */
 class AnyKeyOverlay implements Component {
   private readonly body: Text;
@@ -101,7 +116,6 @@ export class RemoteHub {
   constructor(pi: ExtensionAPI) {
     this.pi = pi;
     this.bridge = new SessionBridge(pi, this.journal);
-    this.journal.setWaiterCountListener(() => this.scheduleStatusRefresh());
   }
 
   get sessionBridge(): SessionBridge {
@@ -169,8 +183,6 @@ export class RemoteHub {
       auth: this.auth,
       journal: this.journal,
       currentState: () => this.currentState(),
-      requestApproval: (device, currentLabel) =>
-        this.requestApproval(ctx, device, currentLabel),
       onLeaseChange: () => this.refreshViews(ctx),
     });
 
@@ -181,6 +193,7 @@ export class RemoteHub {
       bridge: this.bridge,
       allowedOrigins: this.allowedOrigins(),
       staticFrontend: new StaticFrontend(resolveWebDist()),
+      onViewerCountChange: () => this.scheduleStatusRefresh(),
       onRemoteAbort: (deviceLabel) => {
         audit(this.pi, "remote_aborted", { deviceLabel });
       },
@@ -243,34 +256,51 @@ export class RemoteHub {
     this.publishState();
     this.sharing = false;
 
-    // 先通知观察者，再逐层关闭。
-    this.journal.append({ type: "share_ended", reason });
-    this.journal.close();
+    // 任一环节抛错或挂起都不允许把状态机永久卡在 stopping：
+    // finally 中无条件回收全部资源并回到 idle。
+    try {
+      // 先通知观察者，再逐层关闭。
+      this.journal.append({ type: "share_ended", reason });
+      this.journal.close();
 
-    if (this.tunnel) {
-      await this.tunnel.stop();
+      if (this.tunnel) {
+        await withTimeout("关闭隧道", this.tunnel.stop());
+      }
+      if (this.server) {
+        await withTimeout("关闭本地服务", this.server.stop());
+      }
+    } catch (error) {
+      // 资源回收在 finally 中继续；记录关闭失败原因供状态面板展示。
+      const detail = error instanceof Error ? error.message : String(error);
+      this.lastError = this.lastError ?? `停止分享时出错：${detail}`;
+    } finally {
       this.tunnel = null;
-    }
-    if (this.server) {
-      await this.server.stop();
       this.server = null;
-    }
-    this.control?.end();
-    this.control = null;
-    this.auth?.revokeAll();
-    this.auth = null;
-    this.publicUrl = null;
-    this.viewerUrl = null;
-    this.controllerUrl = null;
-    this.bridge.detach();
-    this.phase = "idle";
+      this.control?.end();
+      this.control = null;
+      this.auth?.revokeAll();
+      this.auth = null;
+      this.publicUrl = null;
+      this.viewerUrl = null;
+      this.controllerUrl = null;
+      this.bridge.detach();
+      this.phase = "idle";
 
-    if (shouldAudit) {
-      audit(this.pi, "share_stopped", { detail: reason });
-    }
-    // 刷新 TUI（清除状态条；使用最近一次会话上下文的 ui）。
-    if (this.lastCtx) {
-      this.refreshViews(this.lastCtx);
+      if (shouldAudit) {
+        try {
+          audit(this.pi, "share_stopped", { detail: reason });
+        } catch {
+          // 审计失败不影响状态回收。
+        }
+      }
+      // 刷新 TUI（清除状态条；使用最近一次会话上下文的 ui）。
+      if (this.lastCtx) {
+        try {
+          this.refreshViews(this.lastCtx);
+        } catch {
+          // 刷新失败不影响状态回收。
+        }
+      }
     }
   }
 
@@ -299,7 +329,7 @@ export class RemoteHub {
       viewerUrl: this.viewerUrl ?? undefined,
       controllerUrl: this.controllerUrl ?? undefined,
       claimAvailable: this.auth?.claimAvailable ?? false,
-      viewerCount: this.journal.waiterCount,
+      viewerCount: this.server?.viewerCount ?? 0,
       controller: this.control?.current ?? undefined,
     };
   }
@@ -325,31 +355,6 @@ export class RemoteHub {
       controllerLabel: controller?.deviceLabel,
       localHasControl: controller === null || controller === undefined,
     };
-  }
-
-  /** 本机审批对话：显示设备信息；已有控制者时明确提示替换。 */
-  private async requestApproval(
-    ctx: ExtensionContext,
-    device: DeviceInfo,
-    currentControllerLabel: string | undefined,
-  ): Promise<"approved" | "denied"> {
-    if (!ctx.hasUI) {
-      return "denied";
-    }
-    const replacing = currentControllerLabel
-      ? `\n\n注意：将替换当前控制者「${currentControllerLabel}」。`
-      : "";
-    const ok = await ctx.ui.confirm(
-      "远端设备申请控制权",
-      `设备：${device.deviceLabel}\n设备 ID：${device.deviceId.slice(0, 8)}…${replacing}\n\n是否批准？`,
-      { timeout: LIMITS.controlRequestTimeoutMs },
-    );
-    if (ok) {
-      audit(this.pi, "control_requested", { deviceLabel: device.deviceLabel, detail: "已批准" });
-      return "approved";
-    }
-    audit(this.pi, "control_requested", { deviceLabel: device.deviceLabel, detail: "已拒绝" });
-    return "denied";
   }
 
   private refreshViews(ctx: ExtensionContext): void {

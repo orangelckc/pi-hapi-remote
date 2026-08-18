@@ -132,11 +132,6 @@ export interface ClaimResponse {
   controllerToken: string;
 }
 
-export interface ControlRequestResponse {
-  status: "approved" | "denied" | "timeout";
-  controllerToken?: string;
-}
-
 export interface CommandAck {
   ok: true;
   /** 命令 id 重复提交时为 true，不会重复执行。 */

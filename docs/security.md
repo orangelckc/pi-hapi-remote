@@ -16,7 +16,7 @@
 
 | 令牌 | 权限 | 失效 |
 | --- | --- | --- |
-| `viewerToken` | 读取 Snapshot/Events；申请控制 | 分享结束 |
+| `viewerToken` | 只读 Snapshot/Events | 分享结束 |
 | `claimToken` | 一次 Claim 兑换 | 兑换即作废或分享结束 |
 | `controllerToken` | 读取 + 命令提交 | 收回/撤销/替换/分享结束 |
 
@@ -26,7 +26,7 @@
 
 - 单写者租约：任意时刻至多一个远端设备持有。
 - Claim 兑换 = 本机用户的预先授权（QR 一次性）。
-- Viewer 申请控制需本机确认；已有控制者时明确显示替换提示。
+- Viewer 没有控制升级接口；只有一次性 Claim 可以兑换 Controller Token。
 - 远端控制期间本机普通输入被拦截（`source === "extension"` 的注入放行），`Ctrl+Shift+R` / `/remote reclaim` 立即收回。
 - 收回后旧 Controller Token 立即失效，后续命令全部拒绝。
 
@@ -46,7 +46,7 @@ Service Worker 只 precache 应用壳；跨域 API 请求不拦截、不缓存�
 
 ## 审计
 
-以下事件以自定义条目持久化在 Session 中（不进入模型上下文）：分享开始/停止、控制权申请（含批准/拒绝）、QR 兑换、控制者替换、本机收回、撤销设备、远端 Abort。
+以下事件以自定义条目持久化在 Session 中（不进入模型上下文）：分享开始/停止、QR 兑换、控制者替换、本机收回、撤销设备、远端 Abort。
 
 ## 隧道
 

@@ -12,7 +12,6 @@ export interface ControllerInfo extends DeviceInfo {
 
 export type LeaseChangeReason =
   | "claimed"
-  | "request_approved"
   | "replaced"
   | "local_reclaimed"
   | "remote_released"
@@ -29,7 +28,7 @@ export interface ControlLeaseEvents {
 }
 
 /**
- * 控制租约。本机默认持有控制权；远端通过 Claim 兑换或本机批准获得；
+ * 控制租约。本机默认持有控制权；远端只能通过 Claim 兑换获得；
  * 本机可随时收回；Share 结束时全部失效。
  */
 export class ControlLease {
