@@ -2,40 +2,53 @@
 
 ## Pi Package 结构
 
-根 `package.json` 即 Pi Package 清单：
+根 `package.json` 指向预构建入口，只发布 `dist/`、README 与许可证：
 
 ```json
 {
   "name": "pi-hapi-remote",
   "keywords": ["pi-package"],
-  "pi": { "extensions": ["./extensions/pi-hapi-remote/index.ts"] },
+  "files": ["dist", "README.md", "LICENSE"],
+  "pi": { "extensions": ["./dist/index.mjs"] },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-agent-core": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
-  },
-  "dependencies": { "qrcode": "^1.5.4", "tunnelmole": "^2.2.0" }
+  }
 }
 ```
 
-- 扩展源码以 TypeScript 直接分发（Pi 通过 jiti 加载，无需预编译）。
-- `qrcode`（QR 渲染）与 `tunnelmole`（CLI 子进程）为运行时依赖，位于 `dependencies`，`pi install` 时自动安装。
-- Pi 核心包声明为 `peerDependencies`（Pi 打包提供，不重复捆绑）。
+发布目录：
+
+```text
+dist/
+├── index.mjs                  扩展单文件（包含 qrcode）
+├── vendor/
+│   ├── tunnelmole.cjs         Tunnelmole CLI 单文件
+│   └── tunnelmole.cjs.LEGAL.txt
+└── web/                       已构建 PWA
+```
+
+- `dist/` 由 `prepack` 在发布前生成并被 Git 忽略，不进入仓库历史。
+- `qrcode` 与 `tunnelmole` 只存在于 `devDependencies`，构建时由 esbuild 打入发布产物。
+- 发布包没有 `dependencies`，`pi install npm:...` 不再下载第三方运行时依赖。
+- Pi 核心包声明为 `peerDependencies` 并保持外置，由 Pi 运行时提供。
 
 ## 发布到 npm
 
 ```bash
-pnpm typecheck          # 必须通过
-pnpm build:web          # 刷新前端产物（web/dist，分享时本机同源伺服）
-npm publish             # files 字段外的内容不会发布；确认 .npmignore/未配置 files 时包含
+pnpm build:package      # 类型检查、构建 PWA、生成 dist
+npm pack --dry-run      # 确认只包含发布产物
+npm publish             # prepack 会再次执行完整构建
 ```
 
 发布前检查：
 
 1. `package.json` 的 `version` 已递增。
-2. `npx tsc --noEmit` 与 `pnpm --filter pi-hapi-remote-web typecheck` 通过。
-3. `pi -e ./extensions/pi-hapi-remote/index.ts` 实际加载无错误。
+2. `pnpm build:package` 通过。
+3. `npm pack --dry-run` 中不存在 `web/src`、`extensions`、`docs` 或锁文件。
+4. 使用生成的 tgz 执行 `pi -e npm:./pi-hapi-remote-x.y.z.tgz`，确认实际加载无错误。
 
 安装：
 
@@ -43,26 +56,16 @@ npm publish             # files 字段外的内容不会发布；确认 .npmigno
 pi install npm:pi-hapi-remote
 ```
 
-## 发布到 Git
-
-```bash
-git tag v0.2.0 && git push --tags
-pi install git:github.com/orangelckc/pi-hapi-remote@v0.2.0
-```
-
-Pi 克隆仓库到 `~/.pi/agent/git/` 后以 `npm install --omit=dev` 安装根 `package.json` 的 `dependencies`。`web/dist` 前端产物已随仓库分发，安装后开箱可用。
-
-升级：pinned 包不随 `pi update --extensions` 更新，需重新执行 `pi install git:github.com/orangelckc/pi-hapi-remote@vX.Y.Z`。
-
 ## 前端（本机同源伺服）
 
 分享链接直接指向隧道地址，前端静态产物由本机 Remote Bridge 同源伺服，无需部署任何静态托管：
 
 ```bash
-pnpm build:web          # 产物 web/dist（默认伺服目录）
+pnpm build:web          # 源码开发产物 web/dist
+pnpm build:package      # 发布产物 dist/web
 ```
 
-- 缺省目录为 `<仓库>/web/dist`，可用 `PI_REMOTE_WEB_DIST` 覆盖。
+- npm 发布入口自动读取 `dist/web`；源码入口自动读取 `web/dist`，也可用 `PI_REMOTE_WEB_DIST` 覆盖。
 - 未构建产物时分享仍可用（API 正常），页面返回构建提示；开发时可用 `pnpm dev:web`（localhost:5173，已在 Origin 白名单）。
 - 注意：隧道地址每次分享都变化，主屏安装的 PWA 图标不跨会话保留。
 

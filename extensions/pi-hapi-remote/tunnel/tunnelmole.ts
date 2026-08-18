@@ -9,6 +9,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { LIMITS } from "../../../shared/protocol.js";
 import type {
   TunnelAdapter,
@@ -16,8 +17,19 @@ import type {
   TunnelStartOptions,
 } from "./types.js";
 
-/** 解析 tunnelmole CLI 入口脚本（跨平台：直接用 node 运行 js 文件）。 */
+/** 解析 tunnelmole CLI 入口脚本（发布包优先使用预打包的单文件 CLI）。 */
 function resolveTunnelmoleEntry(): string {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  const bundledCandidates = [
+    // 发布产物：dist/index.mjs 与 dist/vendor/tunnelmole.cjs。
+    path.resolve(moduleDir, "vendor/tunnelmole.cjs"),
+    // 源码开发：extensions/pi-hapi-remote/tunnel/ → dist/vendor。
+    path.resolve(moduleDir, "../../../dist/vendor/tunnelmole.cjs"),
+  ];
+  for (const candidate of bundledCandidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+
   const require = createRequire(import.meta.url);
   try {
     const pkgPath = require.resolve("tunnelmole/package.json");
@@ -29,7 +41,7 @@ function resolveTunnelmoleEntry(): string {
       if (existsSync(entry)) return entry;
     }
   } catch {
-    // 包未安装：回退 npx
+    // 开发依赖未安装：最后回退 npx。
   }
   return "npx";
 }

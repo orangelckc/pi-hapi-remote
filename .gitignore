@@ -1,5 +1,5 @@
 node_modules/
-# 仅忽略根级构建产物；web/dist 为发布产物，需随仓库分发
+# npm 发布时由 prepack 生成，不进入 Git 历史
 /dist/
 *.tsbuildinfo
 .vercel/

@@ -1,5 +1,9 @@
 # pi-hapi-remote
 
+[![npm version](https://img.shields.io/npm/v/pi-hapi-remote.svg)](https://www.npmjs.com/package/pi-hapi-remote)
+[![npm downloads](https://img.shields.io/npm/dm/pi-hapi-remote.svg)](https://www.npmjs.com/package/pi-hapi-remote)
+[![license](https://img.shields.io/npm/l/pi-hapi-remote.svg)](LICENSE)
+
 临时分享并远端控制当前 [Pi](https://github.com/earendil-works/pi-mono) 编码会话的扩展包。
 
 在本机终端里执行 `/remote start`，扩展会在回环地址启动临时 HTTP Bridge、通过 Tunnelmole 建立公网 HTTPS 入口，并生成只读 Viewer 链接与一次性 Controller 二维码。前端页面由本机直接伺服（与 API 同源），远端设备打开链接即可查看当前活动分支，并在获得授权后接管输入。
@@ -28,15 +32,24 @@ Pi 当前进程
 
 ## 安装
 
+推荐从 [npm](https://www.npmjs.com/package/pi-hapi-remote) 安装预构建包：只下载发布产物，不克隆源码仓库，也不安装第三方运行时依赖。
+
 ```bash
-# npm
 pi install npm:pi-hapi-remote
+```
 
-# git
-pi install git:github.com/orangelckc/pi-hapi-remote
+升级已安装版本：
 
-# 本地开发
-git clone <repo> && pnpm install
+```bash
+pi update npm:pi-hapi-remote
+```
+
+本地源码开发：
+
+```bash
+git clone https://github.com/orangelckc/pi-hapi-remote.git
+cd pi-hapi-remote
+pnpm install
 pi -e ./extensions/pi-hapi-remote/index.ts
 ```
 
@@ -57,9 +70,9 @@ pi -e ./extensions/pi-hapi-remote/index.ts
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `PI_REMOTE_WEB_DIST` | `<仓库>/web/dist` | 前端静态产物目录（存在才伺服；缺失时分享链接只提示构建引导页） |
+| `PI_REMOTE_WEB_DIST` | 自动检测发布包 `dist/web` 或源码目录 `web/dist` | 前端静态产物目录（存在才伺服；缺失时分享链接只提示构建引导页） |
 
-分享前先构建前端：`pnpm build:web`（产物在 `web/dist`）。未构建时 API 仍可用，页面会提示运行构建。
+npm 安装包已经包含前端产物，无需额外构建。仅源码开发时需要运行 `pnpm build:web`。
 
 ## 开发
 
@@ -68,6 +81,7 @@ pnpm install         # 安装依赖
 pnpm typecheck       # 扩展 + PWA 类型检查
 pnpm dev:web         # 本地 PWA 开发服务器（localhost:5173）
 pnpm build:web       # 构建 PWA（web/dist）
+pnpm build:package   # 生成零运行时依赖发布产物（dist）
 ```
 
 目录结构：

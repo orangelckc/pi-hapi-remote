@@ -48,15 +48,19 @@ function encodePayload(payload: object): string {
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
 }
 
-/** 前端静态产物目录（可被 PI_REMOTE_WEB_DIST 覆盖；缺省为仓库内 web/dist）。 */
+/** 前端静态产物目录（可被 PI_REMOTE_WEB_DIST 覆盖）。 */
 function resolveWebDist(): string | null {
   const override = process.env.PI_REMOTE_WEB_DIST;
   if (override) return path.resolve(override);
-  const candidate = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "../../web/dist",
-  );
-  return existsSync(candidate) ? candidate : null;
+
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    // 发布产物：dist/index.mjs 与 dist/web/。
+    path.resolve(moduleDir, "web"),
+    // 源码开发：extensions/pi-hapi-remote/ → web/dist/。
+    path.resolve(moduleDir, "../../web/dist"),
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
 
 /** 停止序列的总体预算：任一环节挂起也不允许状态机卡在 stopping。 */

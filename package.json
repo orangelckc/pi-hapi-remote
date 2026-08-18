@@ -9,14 +9,32 @@
     "pi-coding-agent"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/orangelckc/pi-hapi-remote.git"
+  },
+  "homepage": "https://github.com/orangelckc/pi-hapi-remote#readme",
+  "bugs": {
+    "url": "https://github.com/orangelckc/pi-hapi-remote/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "pi": {
     "extensions": [
-      "./extensions/pi-hapi-remote/index.ts"
+      "./dist/index.mjs"
     ]
   },
   "scripts": {
     "typecheck": "tsc --noEmit && pnpm --filter pi-hapi-remote-web typecheck",
     "build:web": "pnpm --filter pi-hapi-remote-web build",
+    "build:package": "pnpm typecheck && pnpm build:web && node scripts/build-package.mjs",
+    "prepack": "pnpm build:package",
     "dev:web": "pnpm --filter pi-hapi-remote-web dev",
     "preview:web": "pnpm --filter pi-hapi-remote-web preview"
   },
@@ -26,18 +44,17 @@
     "typebox": "*",
     "@earendil-works/pi-agent-core": "*"
   },
-  "dependencies": {
-    "qrcode": "^1.5.4",
-    "tunnelmole": "^2.2.0"
-  },
   "devDependencies": {
+    "@earendil-works/pi-agent-core": "^0.84.2",
     "@earendil-works/pi-coding-agent": "^0.84.2",
     "@earendil-works/pi-tui": "*",
     "@types/node": "^22.10.0",
     "@types/qrcode": "^1.5.5",
+    "esbuild": "^0.25.12",
+    "qrcode": "^1.5.4",
+    "tunnelmole": "^2.2.0",
     "typebox": "^1.1.38",
-    "typescript": "^5.7.0",
-    "@earendil-works/pi-agent-core": "^0.84.2"
+    "typescript": "^5.7.0"
   },
   "engines": {
     "node": ">=20"
