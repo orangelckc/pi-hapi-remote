@@ -36,6 +36,44 @@ export function argsPreviewOf(args: unknown): string {
   return truncateText(text, LIMITS.maxArgsPreviewLength).text;
 }
 
+/** 从工具参数提取目标摘要（bash→command，其余依次取 path / pattern / query）。 */
+export function targetOf(args: unknown): string {
+  if (!args || typeof args !== "object") return "";
+  const record = args as Record<string, unknown>;
+  let value = "";
+  if (typeof record.command === "string" && record.command.trim()) {
+    value = record.command;
+  } else {
+    for (const key of ["path", "file_path", "filePath", "pattern", "query"]) {
+      const v = record[key];
+      if (typeof v === "string" && v.trim()) {
+        value = v;
+        break;
+      }
+    }
+  }
+  return truncateText(value.trim(), LIMITS.maxTargetLength).text;
+}
+
+/** 工具结果的 content 载荷（事件路径传 AgentToolResult，消息路径传消息本体）。 */
+function resultContentOf(result: unknown): unknown {
+  if (result && typeof result === "object" && "content" in result) {
+    return (result as { content: unknown }).content;
+  }
+  return result;
+}
+
+/** 防御式提取工具结果 details.diff（编辑类工具由 Pi 填充）。 */
+function diffOf(result: unknown): string {
+  if (!result || typeof result !== "object") return "";
+  const details = (result as { details?: unknown }).details;
+  if (details && typeof details === "object") {
+    const diff = (details as { diff?: unknown }).diff;
+    if (typeof diff === "string") return diff;
+  }
+  return "";
+}
+
 /** 提取消息文本内容（TextContent 拼接；图片以占位符表示）。 */
 function textContentOf(content: unknown): string {
   if (typeof content === "string") return content;
@@ -101,6 +139,99 @@ function thinkingOf(content: unknown): {
 function errorMessageOf(message: { errorMessage?: string }): string | undefined {
   if (!message.errorMessage) return undefined;
   return truncateText(message.errorMessage, LIMITS.maxTextLength).text;
+}
+
+// ---- 用户消息内部信封剥离 ----
+// 移植自 pi-agent-extension 的 promptModes：信封（plan-mode / plan-approval /
+// handoff-context / skill / pi-context）面向模型而非对话记录，转发前剥离，
+// 仅保留技能名与文件引用作为展示摘要，避免本机路径与超长 SKILL.md 外泄。
+
+interface EnvelopePattern {
+  leading: RegExp;
+  trailing: RegExp;
+  kind?: "context" | "skill";
+}
+
+const ENVELOPE_PATTERNS: readonly EnvelopePattern[] = [
+  {
+    leading: /^<pi-context>([\s\S]*?)<\/pi-context>\s*/u,
+    trailing: /\s*<pi-context>([\s\S]*?)<\/pi-context>$/u,
+    kind: "context",
+  },
+  {
+    leading: /^<plan-mode>[\s\S]*?<\/plan-mode>\s*/u,
+    trailing: /\s*<plan-mode>[\s\S]*?<\/plan-mode>$/u,
+  },
+  {
+    leading: /^<plan-approval>[\s\S]*?<\/plan-approval>\s*/u,
+    trailing: /\s*<plan-approval>[\s\S]*?<\/plan-approval>$/u,
+  },
+  {
+    leading: /^<handoff-context>[\s\S]*?<\/handoff-context>\s*/u,
+    trailing: /\s*<handoff-context>[\s\S]*?<\/handoff-context>$/u,
+  },
+  {
+    leading: /^<skill name="([^"\n]+)"(?: location="[^"]*")?>\n[\s\S]*?\n<\/skill>\s*/u,
+    trailing: /\s*<skill name="([^"\n]+)"(?: location="[^"]*")?>\n[\s\S]*?\n<\/skill>$/u,
+    kind: "skill",
+  },
+];
+
+const GOAL_CONFIRMATION_PATTERN =
+  /^\[GOAL CONFIRMATION focus=(?:goal|sisyphus)\]\n[^\n]*\n\nTopic the user provided:\n<goal_topic>\n([\s\S]*?)\n<\/goal_topic>(?:\n[\s\S]*)?$/u;
+
+export interface ParsedUserPrompt {
+  /** 剥离全部信封后的用户可见文本。 */
+  text: string;
+  /** 首个 skill 信封的技能名。 */
+  skillName?: string;
+  /** 首个 pi-context 块的原文（用于提取文件引用）。 */
+  context?: string;
+}
+
+/** 剥离用户消息首尾的内部信封，保留展示摘要。 */
+export function parseUserPromptEnvelopes(raw: string): ParsedUserPrompt {
+  let visible = raw.match(GOAL_CONFIRMATION_PATTERN)?.[1] ?? raw;
+  const parsed: ParsedUserPrompt = { text: visible };
+  let previous = "";
+  while (visible !== previous) {
+    previous = visible;
+    for (const pattern of ENVELOPE_PATTERNS) {
+      const leading = visible.match(pattern.leading);
+      const trailing = leading ? undefined : visible.match(pattern.trailing);
+      const match = leading ?? trailing;
+      if (!match) continue;
+      if (pattern.kind === "skill") {
+        parsed.skillName ??= match[1];
+      } else if (pattern.kind === "context") {
+        parsed.context ??= match[1];
+      }
+      visible = leading
+        ? visible.slice(leading[0].length)
+        : visible.slice(0, visible.length - trailing![0].length);
+      break;
+    }
+  }
+  parsed.text = visible;
+  return parsed;
+}
+
+/** 从 pi-context 正文提取文件引用（- file: "path" → @basename）。 */
+function contextFileRefs(context: string | undefined): string[] {
+  if (!context) return [];
+  const refs: string[] = [];
+  for (const line of context.split("\n")) {
+    if (!line.startsWith("- file: ")) continue;
+    try {
+      const value = JSON.parse(line.slice("- file: ".length)) as unknown;
+      if (typeof value === "string" && value.trim()) {
+        refs.push(`@${value.split(/[/\\]/).pop() || value}`);
+      }
+    } catch {
+      refs.push("@file");
+    }
+  }
+  return refs;
 }
 
 /** 提取助手消息中的工具调用块。 */
@@ -244,9 +375,14 @@ export class TranscriptProjector {
 
   /** 工具开始执行：创建 running 状态的工具条目（若已存在则仅更新参数）。 */
   toolStarted(toolCallId: string, toolName: string, args: unknown): RemoteEntry | null {
+    const target = targetOf(args);
     const existing = this.log.get(toolCallId);
     if (existing && existing.kind === "tool_call") {
-      const updated: ToolCallEntry = { ...existing, argsPreview: argsPreviewOf(args) };
+      const updated: ToolCallEntry = {
+        ...existing,
+        argsPreview: argsPreviewOf(args),
+        target: target || undefined,
+      };
       this.put(updated);
       return updated;
     }
@@ -255,6 +391,7 @@ export class TranscriptProjector {
       id: toolCallId,
       toolName,
       argsPreview: argsPreviewOf(args),
+      target: target || undefined,
       status: "running",
       timestamp: Date.now(),
     };
@@ -262,14 +399,18 @@ export class TranscriptProjector {
     return entry;
   }
 
-  /** 工具执行完成：填充结果并收敛状态（幂等）。 */
+  /** 工具执行完成：填充结果与 diff 并收敛状态（幂等）。
+   * result 兼容两种形态：AgentToolResult（事件路径）与 ToolResultMessage（消息路径）。 */
   toolFinished(
     toolCallId: string,
     toolName: string,
-    content: unknown,
+    result: unknown,
     isError: boolean,
   ): RemoteEntry | null {
-    const { text, truncated } = toolResultTextOf(content);
+    const { text, truncated } = toolResultTextOf(resultContentOf(result));
+    const diffResult = truncateText(diffOf(result), LIMITS.maxDiffLength);
+    const diff = diffResult.text || undefined;
+    const diffTruncated = diff ? diffResult.truncated || undefined : undefined;
     const existing = this.log.get(toolCallId);
     if (existing && existing.kind === "tool_call") {
       const updated: ToolCallEntry = {
@@ -278,6 +419,8 @@ export class TranscriptProjector {
         status: isError ? "error" : "complete",
         resultText: text,
         resultTruncated: truncated,
+        diff,
+        diffTruncated,
         completedAt: Date.now(),
       };
       this.put(updated);
@@ -291,6 +434,8 @@ export class TranscriptProjector {
       status: isError ? "error" : "complete",
       resultText: text,
       resultTruncated: truncated,
+      diff,
+      diffTruncated,
       timestamp: Date.now(),
       completedAt: Date.now(),
     };
@@ -348,13 +493,22 @@ export class TranscriptProjector {
     }
   }
 
-  private absorbUserMessage(message: { content: unknown; timestamp?: number }): RemoteEntry[] {
-    const text = textContentOf(message.content);
-    if (!text) return [];
+  private absorbUserMessage(message: {
+    content: unknown;
+    timestamp?: number;
+  }): RemoteEntry[] {
+    const raw = textContentOf(message.content);
+    if (!raw) return [];
+    // 剥离内部信封：仅转发可见文本与展示摘要（技能名 / 文件引用）。
+    const parsed = parseUserPromptEnvelopes(raw);
+    const contextFiles = contextFileRefs(parsed.context);
+    if (!parsed.text && !parsed.skillName && contextFiles.length === 0) return [];
     const entry: RemoteEntry = {
       kind: "user_message",
       id: `user:${++this.seq}`,
-      text,
+      text: parsed.text,
+      skillName: parsed.skillName,
+      contextFiles: contextFiles.length > 0 ? contextFiles : undefined,
       timestamp: message.timestamp ?? Date.now(),
     };
     this.put(entry);
@@ -365,12 +519,14 @@ export class TranscriptProjector {
     toolCallId: string;
     toolName: string;
     content: unknown;
+    details?: unknown;
     isError: boolean;
   }): RemoteEntry[] {
+    // ToolResultMessage 本体即携带 content + details，与 AgentToolResult 形状兼容。
     const updated = this.toolFinished(
       message.toolCallId,
       message.toolName,
-      message.content,
+      message,
       message.isError,
     );
     return updated ? [updated] : [];

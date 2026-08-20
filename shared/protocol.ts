@@ -6,7 +6,7 @@
  * 变更时必须递增 PROTOCOL_VERSION。
  */
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /** URL Fragment 中的连接载荷（Fragment 不会发送给静态托管服务端）。 */
 export interface SharePayload {
@@ -30,7 +30,12 @@ export type RemoteEntry =
 export interface UserMessageEntry {
   kind: "user_message";
   id: string;
+  /** 剥离内部信封（plan-mode / skill / pi-context 等）后的用户可见文本。 */
   text: string;
+  /** skill 信封的技能名（v3），渲染为气泡内小标签。 */
+  skillName?: string;
+  /** pi-context 中的文件引用（v3，@basename 形式）。 */
+  contextFiles?: string[];
   timestamp: number;
 }
 
@@ -61,6 +66,12 @@ export interface ToolCallEntry {
   /** 工具结果文本（已截断），完成后填充。 */
   resultText?: string;
   resultTruncated?: boolean;
+  /** 工具目标摘要（v3）：bash→command、read/write/edit→path、grep→pattern/query 等，
+   * 服务端从原始参数提取，避免前端解析截断后的 argsPreview。 */
+  target?: string;
+  /** 编辑类工具的 unified diff 行（v3，来自工具结果 details.diff，已截断）。 */
+  diff?: string;
+  diffTruncated?: boolean;
   timestamp: number;
   completedAt?: number;
 }
@@ -157,6 +168,10 @@ export const LIMITS = {
   maxArgsPreviewLength: 2_000,
   /** 工具结果截断长度。 */
   maxToolResultLength: 50_000,
+  /** 工具 diff 截断长度。 */
+  maxDiffLength: 50_000,
+  /** 工具目标摘要截断长度。 */
+  maxTargetLength: 88,
   /** 长轮询最长等待。 */
   longPollMaxWaitMs: 25_000,
   /** 全局并发长轮询上限。 */

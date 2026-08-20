@@ -56,13 +56,12 @@ export default function (pi: ExtensionAPI) {
     hub.sessionBridge.onToolExecutionStart(event.toolCallId, event.toolName, event.args);
   });
   pi.on("tool_execution_end", async (event) => {
-    const content = event.result && typeof event.result === "object" && "content" in event.result
-      ? (event.result as { content: unknown }).content
-      : event.result;
+    // 传递完整 result（AgentToolResult：content + details），
+    // 投影层从 details.diff 提取编辑类工具的 diff 统计。
     hub.sessionBridge.onToolExecutionEnd(
       event.toolCallId,
       event.toolName,
-      content,
+      event.result,
       event.isError,
     );
   });

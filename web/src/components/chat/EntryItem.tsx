@@ -1,21 +1,13 @@
 /**
- * 会话条目渲染：消费 AI SDK UIMessage parts（text / reasoning /
- * dynamic-tool / data-*），原始字段回退到 metadata.entry。
+ * 会话条目渲染：用户气泡 / 助手卡片（含思考面板）/ 系统提示。
+ * 工具调用与纯思考条目由 ActivityGroup 分组渲染（见 presentation.ts）；
+ * 原始字段回退到 metadata.entry。
  */
 import { memo, useEffect, useState } from "react";
-import {
-  AlertTriangle,
-  Brain,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Clock3,
-  Info,
-  Loader2,
-  X,
-} from "lucide-react";
-import type { AssistantMessageEntry, ToolCallEntry } from "../../protocol.js";
+import { AlertTriangle, Brain, ChevronDown, ChevronRight, Info, Loader2, Sparkles } from "lucide-react";
+import type { AssistantMessageEntry, UserMessageEntry } from "../../protocol.js";
 import type { RemoteUIMessage } from "../../chat/ui-messages.js";
+import { messageText } from "../../chat/presentation.js";
 import { cn } from "../../lib/utils.js";
 import { Markdown } from "./Markdown.js";
 import {
@@ -29,11 +21,18 @@ function formatTime(timestamp: number): string {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-/** 思考面板：流式阶段自动展开，正文出现后自动折叠；用户手动切换优先。 */
-function ThinkingPanel({ entry }: { entry: AssistantMessageEntry }): JSX.Element {
+/** 思考面板：流式阶段自动展开，正文出现后自动折叠；用户手动切换优先。
+ * live=false（所在活动组已完成）时始终呈现完成态。 */
+export function ThinkingPanel({
+  entry,
+  live,
+}: {
+  entry: AssistantMessageEntry;
+  live?: boolean;
+}): JSX.Element {
   const [userToggled, setUserToggled] = useState(false);
-  const [expanded, setExpanded] = useState(true);
-  const streaming = !entry.text && entry.error === undefined;
+  const streaming = live === false ? false : !entry.text && entry.error === undefined;
+  const [expanded, setExpanded] = useState(streaming);
 
   useEffect(() => {
     if (!userToggled) setExpanded(streaming);
@@ -83,122 +82,65 @@ function ThinkingPanel({ entry }: { entry: AssistantMessageEntry }): JSX.Element
   );
 }
 
-function duration(entry: ToolCallEntry): string | null {
-  if (entry.completedAt === undefined) return null;
-  const seconds = Math.max(1, Math.round((entry.completedAt - entry.timestamp) / 1000));
-  return seconds >= 60 ? `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒` : `${seconds} 秒`;
-}
-
-/** 工具调用卡片：状态图标 + 名称 + 参数预览，展开后显示参数与结果。 */
-function ToolCallCard({ entry }: { entry: ToolCallEntry }): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
-  const resultLines = (entry.resultText ?? "").split("\n").length;
-  const elapsed = duration(entry);
-
-  return (
-    <Collapsible open={expanded} onOpenChange={setExpanded}>
-      <div
-        className={cn(
-          "overflow-hidden rounded-xl border bg-card/60 transition-colors",
-          entry.status === "error" ? "border-danger/30" : "border-border/70",
-        )}
-      >
-        <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-[13px] transition-colors hover:bg-accent/40">
-          {entry.status === "running" ? (
-            <Loader2 className="size-4 shrink-0 animate-spin text-primary" />
-          ) : entry.status === "error" ? (
-            <X className="size-4 shrink-0 text-danger" />
-          ) : (
-            <Check className="size-4 shrink-0 text-ok" />
-          )}
-          <span className="shrink-0 font-mono font-semibold text-primary">
-            {entry.toolName}
-          </span>
-          <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
-            {entry.argsPreview.split("\n")[0]?.slice(0, 80) || ""}
-          </span>
-          {elapsed && (
-            <span className="flex shrink-0 items-center gap-0.5 text-[11px] text-muted-foreground">
-              <Clock3 className="size-3" />
-              {elapsed}
-            </span>
-          )}
-          {expanded ? (
-            <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
-          ) : (
-            <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
-          )}
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="border-t border-border/60 px-3 py-2.5">
-            {entry.argsPreview && (
-              <pre className="mb-2 max-h-[40vh] overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted/70 p-2.5 font-mono text-xs">
-                {entry.argsPreview}
-              </pre>
-            )}
-            {entry.resultText !== undefined ? (
-              <pre
-                className={cn(
-                  "max-h-[40vh] overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted/70 p-2.5 font-mono text-xs",
-                  entry.status === "error" && "text-danger",
-                )}
-              >
-                {entry.resultText}
-                {entry.resultTruncated && (
-                  <span className="mt-1.5 block text-[11px] text-muted-foreground">
-                    （结果过长已截断）
-                  </span>
-                )}
-              </pre>
-            ) : (
-              entry.status === "running" && (
-                <div className="text-xs text-muted-foreground">执行中…</div>
-              )
-            )}
-          </div>
-        </CollapsibleContent>
-        {!expanded && entry.resultText !== undefined && (
-          <div className="px-3 pb-2 text-[11px] text-muted-foreground">
-            {entry.status === "error" ? "执行出错" : `完成 · ${resultLines} 行结果`}
-          </div>
-        )}
-      </div>
-    </Collapsible>
-  );
-}
-
-/** 提取消息的纯文本内容（text parts 拼接）。 */
-function messageText(message: RemoteUIMessage): string {
-  return message.parts
-    .filter((p): p is { type: "text"; text: string } => p.type === "text")
-    .map((p) => p.text)
-    .join("");
-}
-
+/** 用户气泡：技能 / 文件引用小标签 + 可见文本（信封已在服务端剥离）。 */
 function UserBubble({ message }: { message: RemoteUIMessage }): JSX.Element {
-  const text = messageText(message);
+  const entry = message.metadata.entry as UserMessageEntry;
+  const hasBody = Boolean(messageText(message).trim());
   return (
     <div className="fade-in-up flex justify-end">
       <div className="max-w-[85%] rounded-xl rounded-br-sm bg-primary px-3 py-2 text-primary-foreground shadow-sm">
-        <div className="whitespace-pre-wrap break-words text-[14.5px] leading-relaxed">
-          {text}
-        </div>
+        {entry.skillName && (
+          <div className="mb-1 inline-flex max-w-full items-center gap-1 rounded-full bg-black/20 px-2 py-0.5 text-[11px]">
+            <Sparkles className="size-3 shrink-0" />
+            <span className="truncate">{entry.skillName}</span>
+          </div>
+        )}
+        {entry.contextFiles && entry.contextFiles.length > 0 && (
+          <div className="mb-1 flex flex-wrap justify-end gap-1">
+            {entry.contextFiles.map((ref) => (
+              <span
+                key={ref}
+                className="max-w-[12rem] truncate rounded-full bg-black/20 px-2 py-0.5 font-mono text-[11px]"
+                title={ref}
+              >
+                {ref}
+              </span>
+            ))}
+          </div>
+        )}
+        {hasBody && (
+          <div className="whitespace-pre-wrap break-words text-[14.5px] leading-relaxed">
+            {messageText(message)}
+          </div>
+        )}
         <div className="mt-0.5 text-right text-[10px] text-primary-foreground/60">
-          {formatTime(message.metadata.entry.timestamp)}
+          {formatTime(entry.timestamp)}
         </div>
       </div>
     </div>
   );
 }
 
-function AssistantMessage({ message }: { message: RemoteUIMessage }): JSX.Element {
+/** 助手消息卡片：思考面板 + 正文 + 错误信息；结论消息边框强调。 */
+function AssistantMessage({
+  message,
+  conclusion,
+}: {
+  message: RemoteUIMessage;
+  conclusion: boolean;
+}): JSX.Element {
   const entry = message.metadata.entry as AssistantMessageEntry;
   const hasText = message.parts.some((p) => p.type === "text" && p.text);
   const streaming = !hasText && entry.error === undefined && !entry.thinking;
 
   return (
     <div className="fade-in-up flex justify-start">
-      <div className="w-full max-w-[92%] rounded-xl rounded-bl-sm border border-border/60 bg-card px-3 py-2 shadow-sm sm:max-w-[80%]">
+      <div
+        className={cn(
+          "w-full max-w-[92%] rounded-xl rounded-bl-sm border bg-card px-3 py-2 shadow-sm sm:max-w-[80%]",
+          conclusion ? "border-primary/40" : "border-border/60",
+        )}
+      >
         {(entry.thinking !== undefined || entry.thinkingRedacted === true) && (
           <ThinkingPanel entry={entry} />
         )}
@@ -240,14 +182,6 @@ function AssistantMessage({ message }: { message: RemoteUIMessage }): JSX.Elemen
   );
 }
 
-function ToolMessage({ message }: { message: RemoteUIMessage }): JSX.Element {
-  return (
-    <div className="fade-in-up">
-      <ToolCallCard entry={message.metadata.entry as ToolCallEntry} />
-    </div>
-  );
-}
-
 function NoticeMessage({ message }: { message: RemoteUIMessage }): JSX.Element {
   const text = message.parts
     .filter((p) => p.type === "data-notice")
@@ -263,9 +197,11 @@ function NoticeMessage({ message }: { message: RemoteUIMessage }): JSX.Element {
 
 export const EntryItem = memo(function EntryItem({
   message,
+  conclusion,
 }: {
   message: RemoteUIMessage;
-}): JSX.Element {
+  conclusion?: boolean;
+}): JSX.Element | null {
   const entry = message.metadata?.entry;
   // 防御：无 metadata 的消息（如外部注入）降级为纯文本气泡，
   // 避免渲染抛错导致整树卸载。
@@ -285,10 +221,11 @@ export const EntryItem = memo(function EntryItem({
     case "user_message":
       return <UserBubble message={message} />;
     case "assistant_message":
-      return <AssistantMessage message={message} />;
-    case "tool_call":
-      return <ToolMessage message={message} />;
+      return <AssistantMessage message={message} conclusion={conclusion === true} />;
     case "notice":
       return <NoticeMessage message={message} />;
+    default:
+      // tool_call 已由 ActivityGroup 分组渲染，此处仅为类型完备性兑底。
+      return null;
   }
 });

@@ -201,10 +201,10 @@ export class SessionBridge {
   onToolExecutionEnd(
     toolCallId: string,
     toolName: string,
-    content: unknown,
+    result: unknown,
     isError: boolean,
   ): void {
-    const entry = this.projector.toolFinished(toolCallId, toolName, content, isError);
+    const entry = this.projector.toolFinished(toolCallId, toolName, result, isError);
     if (entry) this.publishEntries([entry]);
   }
 
